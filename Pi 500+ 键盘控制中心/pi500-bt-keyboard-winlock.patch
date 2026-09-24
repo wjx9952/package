@@ -1,0 +1,33 @@
+--- daemon.py
++++ daemon.py
+@@ -620,6 +620,21 @@
+         result["removed_devices"] = removed
+         return result
+ 
++    def lock_windows(self):
++        """Send the standard Win+L shortcut over the active BLE HID link."""
++        if not self.connected:
++            raise RuntimeError("Windows 尚未连接")
++        # Linux key 125 is the left GUI/Windows modifier and key 38 is L.
++        self.input_report.notify(keyboard_report({125}, {38}))
++        GLib.timeout_add(100, self._release_shortcut)
++        result = self.status()
++        result["windows_locked"] = True
++        return result
++
++    def _release_shortcut(self):
++        self.input_report.notify(bytes(8))
++        return GLib.SOURCE_REMOVE
++
+     def status(self):
+         return {
+             "ok": True,
+@@ -705,6 +721,8 @@
+                     box["result"] = self.state.start_capture()
+                 elif command == "stop":
+                     box["result"] = self.state.stop_capture()
++                elif command == "lock_windows":
++                    box["result"] = self.state.lock_windows()
+                 elif command == "clear":
+                     box["result"] = self.state.clear_devices()
+                 else:

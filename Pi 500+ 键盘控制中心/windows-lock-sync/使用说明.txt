@@ -1,0 +1,12 @@
+Windows 锁屏同步安装方法
+
+1. 将整个 windows-lock-sync 文件夹复制到 Windows。
+2. 双击 install.cmd。
+3. 输入小屏幕上显示的树莓派 IP 地址，例如 192.168.3.141。
+4. 出现“安装完成”后即可关闭窗口。
+
+安装程序会为当前 Windows 用户创建两个计划任务，不需要常驻窗口：
+- Windows 锁定时通知树莓派；
+- Windows 解锁或登录时通知树莓派。
+
+卸载时双击 uninstall.cmd。

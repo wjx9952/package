@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi 500+ Bluetooth LE Keyboard
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi500-bt-keyboard/daemon.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+{
+  "state_brightness": {
+    "keyboard_mode": 115,
+    "processing": 255,
+    "idle": 56,
+    "completed": 200,
+    "waiting_confirmation": 255
+  },
+  "state_colors": {
+    "keyboard_mode": "#34c759",
+    "processing": "cycle_left_right",
+    "idle": "#2081ee",
+    "completed": "#19de70",
+    "waiting_confirmation": "#f33308"
+  }
+}

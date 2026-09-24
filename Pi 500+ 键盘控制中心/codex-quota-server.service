@@ -1,0 +1,14 @@
+[Unit]
+Description=Codex quota and AOC monitor control API
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 @APP_DIR@/quota_server.py --host 0.0.0.0 --port 8765 --codex codex
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

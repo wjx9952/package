@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Pi 500+ 键盘控制中心
+Comment=蓝牙键盘模式与 Codex RGB 状态灯统一控制
+Exec=@APP_DIR@/run.sh
+Path=@APP_DIR@
+Icon=@APP_DIR@/codex-rgb.svg
+Terminal=false
+Categories=Utility;
+StartupNotify=true

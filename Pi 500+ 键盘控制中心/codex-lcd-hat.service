@@ -1,0 +1,15 @@
+[Unit]
+Description=Codex quota dashboard on Waveshare 1.3inch LCD HAT
+After=codex-quota-server.service
+Requires=codex-quota-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 @APP_DIR@/lcd_hat_dashboard.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
