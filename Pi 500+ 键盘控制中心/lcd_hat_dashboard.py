@@ -870,6 +870,25 @@ def draw_rounded_gradient(
     image.paste(gradient, (left, top), mask)
 
 
+def draw_status_dot(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+    fill: tuple[int, int, int],
+) -> None:
+    """Draw a small circular status dot with smooth sub-pixel edges."""
+    left, top, right, bottom = box
+    width = right - left + 1
+    height = bottom - top + 1
+    scale = 8
+    layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).ellipse(
+        (0, 0, width * scale - 1, height * scale - 1),
+        fill=(*fill, 255),
+    )
+    layer = layer.resize((width, height), Image.Resampling.LANCZOS)
+    image.paste(layer.convert("RGB"), (left, top), layer.getchannel("A"))
+
+
 def draw_card_icon(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
@@ -970,7 +989,7 @@ def render(
         if network_online and local_ip != "--"
         else (255, 69, 58)
     )
-    draw.ellipse((10, 32, 18, 40), fill=status_colour)
+    draw_status_dot(image, (10, 32, 18, 40), status_colour)
     draw.text((23, 30), "IP: " + local_ip, font=F_META, fill=meta_text_colour)
     updated = "Updated " + refreshed
     updated_box = draw.textbbox((0, 0), updated, font=F_META)
@@ -979,7 +998,7 @@ def render(
     draw.text((updated_x, 30), updated, font=F_META, fill=meta_text_colour)
 
     tun_accent = (174, 112, 255) if tun_online else (255, 69, 58)
-    draw.ellipse((10, 46, 18, 54), fill=tun_accent)
+    draw_status_dot(image, (10, 46, 18, 54), tun_accent)
     draw.text(
         (23, 44),
         "TUN IP: " + tun_ip,
