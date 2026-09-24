@@ -3,6 +3,12 @@
 本文档记录每个版本的功能新增、修复和行为变更。
 早期记录根据现有源码、本机备份文件名和开发对话整理；已回退的尝试会明确标注。
 
+## 1.0.5-portable — 2026-09-24
+
+- 修复执行 `systemctl --user restart codex-lcd-hat.service` 时，由 LCD 按键长按打开的 Clash Verge、ChatGPT 和键盘控制中心被一起结束或重启的问题。
+- 原因是桌面应用由 LCD 服务直接创建，被 systemd 归入 `codex-lcd-hat.service` 的 control group。
+- 桌面应用改为通过独立的临时用户服务启动，后续重启 LCD 服务不再影响已打开的应用。
+
 ## 1.0.4-portable — 2026-09-24
 
 - 修复主 IP 绿点和 TUN IP 紫点在 240×240 低分辨率画布上边缘呈现不规整像素块的问题。

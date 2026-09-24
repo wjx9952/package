@@ -688,6 +688,39 @@ def run_desktop_command(command: list[str]) -> subprocess.CompletedProcess[bytes
     )
 
 
+def launch_desktop_app(command: list[str]) -> None:
+    """Launch a GUI app in its own user unit, outside the LCD cgroup."""
+    environment = desktop_environment()
+    launcher = [
+        "/usr/bin/systemd-run",
+        "--user",
+        "--collect",
+        "--no-block",
+        "--quiet",
+    ]
+    for name in (
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ):
+        value = environment.get(name)
+        if value:
+            launcher.append(f"--setenv={name}={value}")
+    launcher.extend(["--", *command])
+    result = subprocess.run(
+        launcher,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=3,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("desktop application launch failed")
+
+
 def focus_or_launch_window(match: str, command: list[str]) -> str:
     """Focus an existing Wayland window, otherwise launch its single instance."""
     if not WLRCTL_PATH.is_file():
@@ -697,13 +730,7 @@ def focus_or_launch_window(match: str, command: list[str]) -> str:
     )
     if focused.returncode == 0:
         return "Focused"
-    subprocess.Popen(
-        command,
-        env=desktop_environment(),
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    launch_desktop_app(command)
     return "Opened"
 
 
