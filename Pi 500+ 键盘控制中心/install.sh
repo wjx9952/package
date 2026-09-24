@@ -22,6 +22,7 @@ required_files=(
     codex-rgb.svg codex-rgb-tray.png codex-lcd-hat.service
     codex-quota-server.service pi500-bt-keyboard.service
     "Pi 500+ 键盘控制中心.desktop" install-root.sh uninstall-root.sh
+    README.txt PORTABLE_README.txt CHANGELOG.md VERSION
     vendor/bin/wtype vendor/bin/wlrctl
 )
 for file in "${required_files[@]}"; do
@@ -52,7 +53,7 @@ do
     install -m 0755 "$SOURCE_DIR/$file" "$TARGET_DIR/$file"
 done
 for file in \
-    codex-rgb.svg codex-rgb-tray.png README.txt PORTABLE_README.txt VERSION \
+    codex-rgb.svg codex-rgb-tray.png README.txt PORTABLE_README.txt CHANGELOG.md VERSION \
     pi500-bt-keyboard.service
 do
     install -m 0644 "$SOURCE_DIR/$file" "$TARGET_DIR/$file"
