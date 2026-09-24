@@ -790,7 +790,10 @@ def website_reachable(url: str) -> bool:
 
 def internet_reachable() -> bool:
     """The green LAN indicator requires an HTTP response from baidu.com."""
-    return website_reachable("https://baidu.com")
+    # The bare domain intermittently stalls during its redirect on this
+    # network. Probe Baidu's canonical HTTPS host directly so a healthy link
+    # does not briefly turn the indicator red.
+    return website_reachable("https://www.baidu.com/")
 
 
 def tun_internet_reachable() -> bool:
