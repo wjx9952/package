@@ -788,14 +788,15 @@ def confirm_codex_request(payload: dict) -> None:
         raise RuntimeError("Codex prompt did not accept the confirmation")
 
 
-def website_reachable(url: str) -> bool:
+def website_reachable(url: str, *, use_head: bool = True) -> bool:
     """Check DNS, TLS and HTTP reachability without downloading the page."""
     try:
+        request_mode = ["--head"] if use_head else ["--range", "0-0"]
         result = subprocess.run(
             [
                 "/usr/bin/curl",
                 "--ipv4",
-                "--head",
+                *request_mode,
                 "--location",
                 "--silent",
                 "--show-error",
@@ -816,11 +817,17 @@ def website_reachable(url: str) -> bool:
 
 
 def internet_reachable() -> bool:
-    """The green LAN indicator requires an HTTP response from baidu.com."""
-    # The bare domain intermittently stalls during its redirect on this
-    # network. Probe Baidu's canonical HTTPS host directly so a healthy link
-    # does not briefly turn the indicator red.
-    return website_reachable("https://www.baidu.com/")
+    """Return true when at least one independent mainland site is reachable."""
+    urls = (
+        "https://connectivitycheck.platform.hicloud.com/generate_204",
+        "https://www.qq.com/",
+        "https://www.taobao.com/",
+    )
+    with ThreadPoolExecutor(max_workers=len(urls)) as executor:
+        return any(executor.map(
+            lambda url: website_reachable(url, use_head=False),
+            urls,
+        ))
 
 
 def tun_internet_reachable() -> bool:
