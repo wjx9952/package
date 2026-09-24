@@ -1299,6 +1299,7 @@ def run(
     dirty = True
     brightness_held = {1: False, -1: False}
     brightness_repeat_at = {1: 0.0, -1: 0.0}
+    brightness_last_value: dict[int, int | None] = {1: None, -1: None}
     last_confirm_at = -KEY3_COOLDOWN_SECONDS
     last_lock_at = -LOCK_COOLDOWN_SECONDS
     last_tun_toggle_at = -TUN_TOGGLE_COOLDOWN_SECONDS
@@ -1792,10 +1793,13 @@ def run(
             # Physical up/down are reversed by the 180-degree HAT mounting.
             for direction, button in ((1, joystick_down), (-1, joystick_up)):
                 if button.is_pressed:
-                    should_adjust = not brightness_held[direction]
-                    if should_adjust:
+                    adjustment_started = not brightness_held[direction]
+                    should_adjust = adjustment_started
+                    if adjustment_started:
                         brightness_held[direction] = True
+                        brightness_last_value[direction] = None
                         brightness_repeat_at[direction] = now + BRIGHTNESS_REPEAT_DELAY
+                        display.show(render_action("Adjusting", "Brightness"))
                     elif now >= brightness_repeat_at[direction]:
                         should_adjust = True
                         brightness_repeat_at[direction] = now + BRIGHTNESS_REPEAT_INTERVAL
@@ -1804,17 +1808,24 @@ def run(
                             result = post_json(
                                 brightness_up_url if direction > 0 else brightness_down_url
                             )
-                            overlay = render_action(
-                                "Brightness", f"{result['brightness']}%"
-                            )
+                            brightness_last_value[direction] = int(result["brightness"])
                         except Exception:
                             overlay = render_action(
-                                "Brightness", "Failed", failed=True
+                                "Failed", "Check AOC", failed=True
                             )
-                        overlay_until = now + 1.5
-                        dirty = True
+                            overlay_until = time.monotonic() + 1.5
+                            dirty = True
                 else:
-                    brightness_held[direction] = False
+                    if brightness_held[direction]:
+                        brightness_held[direction] = False
+                        final_brightness = brightness_last_value[direction]
+                        brightness_last_value[direction] = None
+                        if final_brightness is not None:
+                            overlay = render_action(
+                                "Adjusted", f"Brightness {final_brightness}%"
+                            )
+                            overlay_until = time.monotonic() + 1.5
+                            dirty = True
 
             if overlay is not None and time.monotonic() >= overlay_until:
                 overlay = None
