@@ -7,6 +7,7 @@ import argparse
 import glob
 import json
 import os
+import select
 import shutil
 import subprocess
 import threading
@@ -25,6 +26,7 @@ INPUT_SOURCE_NAMES = {
     WINDOWS_INPUT_SOURCE: "DisplayPort",
 }
 DDC_TIMEOUT_SECONDS = 15
+CODEX_REQUEST_TIMEOUT_SECONDS = 10
 WINDOWS_SESSION_FILE = Path(__file__).resolve().parent / "windows_session_state.json"
 
 
@@ -89,7 +91,7 @@ def resolve_codex_command(command: str) -> str:
 class CodexAppServer:
     def __init__(self, command: str = "codex") -> None:
         self.command = command
-        self.process: subprocess.Popen[str] | None = None
+        self.process: subprocess.Popen[bytes] | None = None
         self.lock = threading.Lock()
         self.next_id = 1
 
@@ -102,8 +104,7 @@ class CodexAppServer:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
         self._request(
             "initialize",
@@ -121,7 +122,9 @@ class CodexAppServer:
 
     def _write(self, message: dict) -> None:
         assert self.process and self.process.stdin
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self.process.stdin.write(
+            (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        )
         self.process.stdin.flush()
 
     def _request(self, method: str, params, *, start: bool = True) -> dict:
@@ -131,7 +134,20 @@ class CodexAppServer:
         request_id = self.next_id
         self.next_id += 1
         self._write({"id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + CODEX_REQUEST_TIMEOUT_SECONDS
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Codex app-server request timed out: {method}"
+                )
+            ready, _, _ = select.select(
+                [self.process.stdout], [], [], remaining
+            )
+            if not ready:
+                raise TimeoutError(
+                    f"Codex app-server request timed out: {method}"
+                )
             line = self.process.stdout.readline()
             if not line:
                 raise RuntimeError("Codex app-server closed unexpectedly")
@@ -146,9 +162,18 @@ class CodexAppServer:
         with self.lock:
             try:
                 return self._request("account/rateLimits/read", None)
-            except (BrokenPipeError, RuntimeError, json.JSONDecodeError):
+            except (
+                BrokenPipeError,
+                RuntimeError,
+                TimeoutError,
+                json.JSONDecodeError,
+            ):
                 if self.process:
                     self.process.kill()
+                    try:
+                        self.process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        pass
                 self.process = None
                 return self._request("account/rateLimits/read", None)
 

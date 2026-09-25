@@ -1526,7 +1526,12 @@ def run(
                     tun_state["network_checking"] = False
                     if result_enabled == tun_state["enabled"]:
                         if tun_state["online"] != result_online:
+                            became_online = result_online and not tun_state["online"]
                             tun_state["online"] = result_online
+                            if became_online:
+                                # Codex quota access normally follows the TUN
+                                # route. Retry immediately when it recovers.
+                                next_fetch = 0.0
                             dirty = True
                     else:
                         next_tun_network_check = 0.0
