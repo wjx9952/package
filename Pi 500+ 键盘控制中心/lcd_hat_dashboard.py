@@ -14,6 +14,7 @@ import argparse
 import fcntl
 import ipaddress
 import json
+import math
 import os
 import queue
 import re
@@ -870,6 +871,64 @@ def quota_windows(data: dict) -> tuple[dict | None, dict | None]:
     return short, long
 
 
+def quota_reset_started(previous: dict | None, current: dict | None) -> bool:
+    """Recognise a real quota-cycle reset without reacting to normal refreshes."""
+    if not previous or not current:
+        return False
+    try:
+        old_percent = int(previous.get("remaining_percent", 0))
+        new_percent = int(current.get("remaining_percent", 0))
+        old_reset = int(previous.get("resets_at", 0))
+        new_reset = int(current.get("resets_at", 0))
+    except (TypeError, ValueError):
+        return False
+    return old_reset > 0 and new_reset > old_reset and new_percent >= old_percent + 5
+
+
+def animated_quota_data(
+    data: dict,
+    animations: dict[str, dict | None],
+    now: float,
+) -> tuple[dict, bool]:
+    """Return a display-only quota snapshot with reset animations applied."""
+    short, long = quota_windows(data)
+    replacements: dict[int, dict] = {}
+    active = False
+    for name, window in (("short", short), ("long", long)):
+        animation = animations.get(name)
+        if not animation or not window:
+            continue
+        elapsed = now - float(animation["started_at"])
+        if elapsed < 0.9:
+            progress = max(0.0, elapsed / 0.9)
+            eased = 0.5 - 0.5 * math.cos(math.pi * progress)
+            displayed = round(
+                int(animation["start_percent"])
+                + (100 - int(animation["start_percent"])) * eased
+            )
+            active = True
+        elif elapsed < 1.1:
+            displayed = 100
+            active = True
+        else:
+            animations[name] = None
+            # Redraw once more so a rare post-reset value below 100 replaces
+            # the full animation frame with the server's real percentage.
+            active = True
+            continue
+        replacement = dict(window)
+        replacement["remaining_percent"] = displayed
+        replacements[id(window)] = replacement
+    if not replacements:
+        return data, active
+    rendered = dict(data)
+    for key in ("primary", "secondary"):
+        window = data.get(key)
+        if window is not None and id(window) in replacements:
+            rendered[key] = replacements[id(window)]
+    return rendered, active
+
+
 def quota_is_stale(data: dict, now: float | None = None) -> bool:
     """Return true when the last successful quota update is over five minutes old."""
     if not data.get("ok"):
@@ -1333,6 +1392,7 @@ def run(
     }
     quota_state = {"fetching": False}
     quota_results: queue.SimpleQueue[dict] = queue.SimpleQueue()
+    quota_animations: dict[str, dict | None] = {"short": None, "long": None}
     try:
         initial_tun_enabled = _clash_verge_tun_setting()
     except Exception:
@@ -1575,6 +1635,27 @@ def run(
                     # failure; its Updated timestamp makes staleness visible.
                     if network_online:
                         if quota_result.get("ok") or not data.get("ok"):
+                            if data.get("ok") and quota_result.get("ok"):
+                                old_short, old_long = quota_windows(data)
+                                new_short, new_long = quota_windows(quota_result)
+                                for name, previous, current in (
+                                    ("short", old_short, new_short),
+                                    ("long", old_long, new_long),
+                                ):
+                                    if quota_reset_started(previous, current):
+                                        quota_animations[name] = {
+                                            "start_percent": int(
+                                                (previous or {}).get(
+                                                    "remaining_percent", 0
+                                                )
+                                            ),
+                                            "actual_percent": int(
+                                                (current or {}).get(
+                                                    "remaining_percent", 0
+                                                )
+                                            ),
+                                            "started_at": now,
+                                        }
                             data = quota_result
                             dirty = True
                         runtime_status["last_quota_error"] = (
@@ -1891,6 +1972,11 @@ def run(
             if overlay is not None and time.monotonic() >= overlay_until:
                 overlay = None
                 dirty = True
+            display_data, quota_animation_active = animated_quota_data(
+                data, quota_animations, time.monotonic()
+            )
+            if quota_animation_active and overlay is None and confirmation is None:
+                dirty = True
             if dirty:
                 if overlay is None and confirmation is not None:
                     runtime_status["last_confirmation_rendered_at"] = (
@@ -1900,7 +1986,7 @@ def run(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
                     else render(
-                        data,
+                        display_data,
                         network_online=network_online,
                         local_ip=lan_ip,
                         tun_ip=str(tun_state["ip"]),
@@ -1917,7 +2003,7 @@ def run(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
                     else render(
-                        data,
+                        display_data,
                         network_online=network_online,
                         local_ip=lan_ip,
                         tun_ip=str(tun_state["ip"]),
