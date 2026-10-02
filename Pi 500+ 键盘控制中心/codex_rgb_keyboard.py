@@ -485,11 +485,26 @@ class CodexRGBApp:
         container = tk.Frame(shell, bg=WINDOW_BG)
         container.pack(fill="both", expand=True)
         self.make_bluetooth_panel(container)
+        self.make_status_panel(container)
+        self.make_quota_panel(container)
+        self.make_display_panel(container)
+
+        self.root.after(80, self.poll_results)
+        self.root.after(50, self.poll_lock_state)
+        self.root.after(150, self.refresh)
+        self.root.after(250, self.poll_bt_status)
+        self.root.after(350, self.poll_monitor_status)
+        self.root.after(500, self.poll_brightness_status)
+        self.install_tray()
+        self.root.after(100, self.poll_tray_requests)
+
+    def make_status_panel(self, parent: tk.Misc) -> None:
         frame = tk.Frame(
-            container,
+            parent,
             bg=CARD_BG,
-            padx=22,
+            padx=18,
             pady=16,
+            width=390,
             highlightbackground=BORDER,
             highlightthickness=1,
         )
@@ -625,24 +640,13 @@ class CodexRGBApp:
             pady=5,
         )
 
-        self.make_monitor_panel(container)
-
-        self.root.after(80, self.poll_results)
-        self.root.after(50, self.poll_lock_state)
-        self.root.after(150, self.refresh)
-        self.root.after(250, self.poll_bt_status)
-        self.root.after(350, self.poll_monitor_status)
-        self.root.after(500, self.poll_brightness_status)
-        self.install_tray()
-        self.root.after(100, self.poll_tray_requests)
-
     def make_bluetooth_panel(self, parent: tk.Misc) -> None:
         panel = tk.Frame(
             parent,
             bg=CARD_BG,
-            padx=22,
+            padx=18,
             pady=16,
-            width=430,
+            width=405,
             highlightbackground=BORDER,
             highlightthickness=1,
         )
@@ -697,13 +701,24 @@ class CodexRGBApp:
             justify="left",
         )
         self.bt_status_label.pack(fill="x")
+        self.bt_devices = tk.StringVar(value="已配对设备：--")
+        tk.Label(
+            status_frame,
+            textvariable=self.bt_devices,
+            bg=SUBTLE_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
 
-        lighting_row = tk.Frame(panel, bg=CARD_BG)
+        lighting_card = tk.Frame(panel, bg=SUBTLE_BG, padx=12, pady=8)
+        lighting_card.pack(fill="x", pady=(0, 10))
+        lighting_row = tk.Frame(lighting_card, bg=SUBTLE_BG)
         lighting_row.pack(fill="x", pady=(0, 3))
         tk.Label(
             lighting_row,
             text="键盘模式灯光",
-            bg=CARD_BG,
+            bg=SUBTLE_BG,
             fg=SECONDARY_TEXT,
             font=(UI_FONT, 9),
             anchor="w",
@@ -724,13 +739,13 @@ class CodexRGBApp:
         self.color_labels["keyboard_mode"] = "键盘模式"
         self.update_color_button("keyboard_mode")
 
-        brightness_row = tk.Frame(panel, bg=CARD_BG)
-        brightness_row.pack(fill="x", pady=(0, 12))
+        brightness_row = tk.Frame(lighting_card, bg=SUBTLE_BG)
+        brightness_row.pack(fill="x")
         tk.Label(
             brightness_row,
             text="灯光亮度",
             width=7,
-            bg=CARD_BG,
+            bg=SUBTLE_BG,
             fg=SECONDARY_TEXT,
             font=(UI_FONT, 9),
             anchor="w",
@@ -744,8 +759,8 @@ class CodexRGBApp:
             command=self.keyboard_mode_brightness_changed,
             showvalue=True,
             resolution=1,
-            length=235,
-            bg=CARD_BG,
+            length=225,
+            bg=SUBTLE_BG,
             fg=TEXT,
             font=(UI_FONT, 8),
             troughcolor="#e5e5ea",
@@ -754,7 +769,7 @@ class CodexRGBApp:
         )
         self.bt_lighting_brightness.pack(side="left", fill="x", expand=True)
 
-        tk.Label(
+        first_use = tk.Label(
             panel,
             text=("首次使用：允许新电脑配对，然后在 Windows 的“蓝牙和设备”"
                   "中添加 Pi500+ Keyboard。"),
@@ -763,8 +778,9 @@ class CodexRGBApp:
             font=(UI_FONT, 9),
             anchor="w",
             justify="left",
-            wraplength=395,
-        ).pack(fill="x", pady=(0, 14))
+            wraplength=360,
+        )
+        first_use.pack(fill="x", pady=(0, 14))
 
         self.bt_pair_button = tk.Button(
             panel,
@@ -823,14 +839,12 @@ class CodexRGBApp:
         )
         self.bt_clear_button.pack(fill="x")
 
-        tk.Label(
-            panel,
-            text="KEY1：切换键盘模式  ·  Ctrl+Alt+F12：紧急退出",
-            bg=CARD_BG,
-            fg=SECONDARY_TEXT,
-            font=(UI_FONT, 9),
-            anchor="w",
-        ).pack(side="bottom", fill="x", pady=(12, 0))
+        # Keep every existing control, but place lighting below the primary
+        # keyboard actions so the four-column layout reads top-to-bottom.
+        lighting_card.pack_forget()
+        first_use.pack_forget()
+        lighting_card.pack(fill="x", pady=(12, 0))
+        first_use.pack(fill="x", pady=(10, 0))
 
         for button in (
             self.bt_pair_button,
@@ -997,6 +1011,9 @@ class CodexRGBApp:
         devices = result.get("paired_devices", [])
         self.bt_status.set(headline)
         self.bt_status_label.configure(fg=status_color)
+        self.bt_devices.set(
+            "已配对设备：" + ("、".join(map(str, devices)) if devices else "--")
+        )
         self.bt_pair_button.configure(state="disabled" if active or pairing else "normal")
         self.bt_start_button.configure(state="normal" if connected and not active else "disabled")
         self.bt_stop_button.configure(state="normal" if active else "disabled")
@@ -1015,6 +1032,7 @@ class CodexRGBApp:
         self.bt_connection_label.configure(fg=APPLE_RED)
         self.bt_status.set("● 键盘模式已关闭")
         self.bt_status_label.configure(fg=APPLE_RED)
+        self.bt_devices.set("已配对设备：--")
         for button in (
             self.bt_pair_button,
             self.bt_start_button,
@@ -1023,20 +1041,20 @@ class CodexRGBApp:
         ):
             button.configure(state="disabled")
 
-    def make_monitor_panel(self, parent: tk.Misc) -> None:
+    def make_quota_panel(self, parent: tk.Misc) -> None:
         panel = tk.Frame(
             parent,
             bg=CARD_BG,
-            padx=22,
+            padx=18,
             pady=16,
-            width=300,
+            width=330,
             highlightbackground=BORDER,
             highlightthickness=1,
         )
-        panel.pack(side="left", fill="both")
+        panel.pack(side="left", fill="both", padx=(0, 14))
         tk.Label(
             panel,
-            text="用量与显示器",
+            text="Codex Usage",
             bg=CARD_BG,
             fg=TEXT,
             font=(UI_FONT, 17, "bold"),
@@ -1044,7 +1062,7 @@ class CodexRGBApp:
         ).pack(fill="x")
         tk.Label(
             panel,
-            text="Codex 额度、LCD HAT 与 AOC 控制",
+            text="Codex 额度与重置卡",
             bg=CARD_BG,
             fg=SECONDARY_TEXT,
             font=(UI_FONT, 9),
@@ -1089,24 +1107,124 @@ class CodexRGBApp:
             anchor="w",
         ).pack(fill="x")
 
-        monitor_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=12)
-        monitor_card.pack(fill="x", pady=(0, 10))
-        self.monitor_input = tk.StringVar(value="信号源  正在读取…")
-        self.monitor_brightness = tk.StringVar(value="亮度  --%")
-        self.lcd_status = tk.StringVar(value="LCD HAT  正在连接…")
-        for variable, weight in (
-            (self.monitor_input, "bold"),
-            (self.monitor_brightness, "normal"),
-            (self.lcd_status, "normal"),
-        ):
+        reset_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=11)
+        reset_card.pack(fill="x")
+        reset_heading = tk.Frame(reset_card, bg=SUBTLE_BG)
+        reset_heading.pack(fill="x", pady=(0, 7))
+        tk.Label(
+            reset_heading,
+            text="重置卡",
+            bg=SUBTLE_BG,
+            fg=TEXT,
+            font=(UI_FONT, 11, "bold"),
+        ).pack(side="left")
+        self.reset_credit_count = tk.StringVar(value="-- 张")
+        tk.Label(
+            reset_heading,
+            textvariable=self.reset_credit_count,
+            bg=SUBTLE_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 10),
+        ).pack(side="right")
+        self.reset_credit_rows: list[tuple[tk.Frame, tk.StringVar, tk.StringVar]] = []
+        for index in range(3):
+            row = tk.Frame(
+                reset_card,
+                bg=CARD_BG,
+                highlightbackground="#e5e5ea",
+                highlightthickness=1,
+                padx=9,
+                pady=6,
+            )
+            row.pack(fill="x", pady=(0, 5 if index < 2 else 0))
+            title = tk.StringVar(value=f"重置卡 {index + 1}")
+            expiry = tk.StringVar(value="到期 --")
             tk.Label(
-                monitor_card,
-                textvariable=variable,
-                bg=SUBTLE_BG,
-                fg=TEXT if weight == "bold" else SECONDARY_TEXT,
-                font=(UI_FONT, 10, weight),
-                anchor="w",
-            ).pack(fill="x", pady=2)
+                row,
+                textvariable=title,
+                bg=CARD_BG,
+                fg=TEXT,
+                font=(UI_FONT, 9, "bold"),
+            ).pack(side="left")
+            tk.Label(
+                row,
+                textvariable=expiry,
+                bg=CARD_BG,
+                fg=SECONDARY_TEXT,
+                font=(UI_FONT, 8),
+            ).pack(side="right")
+            self.reset_credit_rows.append((row, title, expiry))
+
+    def make_display_panel(self, parent: tk.Misc) -> None:
+        panel = tk.Frame(
+            parent,
+            bg=CARD_BG,
+            padx=18,
+            pady=16,
+            width=300,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        panel.pack(side="left", fill="both")
+        tk.Label(
+            panel,
+            text="显示器",
+            bg=CARD_BG,
+            fg=TEXT,
+            font=(UI_FONT, 17, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            panel,
+            text="AOC 信号源与亮度控制",
+            bg=CARD_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+            anchor="w",
+        ).pack(fill="x", pady=(1, 12))
+
+        source_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=15)
+        source_card.pack(fill="x", pady=(0, 12))
+        self.monitor_input = tk.StringVar(value="信号源  正在读取…")
+        self.lcd_status = tk.StringVar(value="LCD HAT  正在连接…")
+        tk.Label(
+            source_card,
+            textvariable=self.monitor_input,
+            bg=SUBTLE_BG,
+            fg=TEXT,
+            font=(UI_FONT, 11, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        self.lcd_status_label = tk.Label(
+            source_card,
+            textvariable=self.lcd_status,
+            bg=SUBTLE_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+            anchor="w",
+        )
+        self.lcd_status_label.pack(fill="x", pady=(7, 0))
+
+        brightness_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=15)
+        brightness_card.pack(fill="x", pady=(0, 12))
+        self.monitor_brightness = tk.StringVar(value="亮度  --%")
+        tk.Label(
+            brightness_card,
+            textvariable=self.monitor_brightness,
+            bg=SUBTLE_BG,
+            fg=TEXT,
+            font=(UI_FONT, 11, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        self.monitor_brightness_bar = tk.Canvas(
+            brightness_card,
+            width=248,
+            height=8,
+            bg=SUBTLE_BG,
+            highlightthickness=0,
+        )
+        self.monitor_brightness_bar.pack(fill="x", pady=(10, 0))
+        self.draw_monitor_brightness(0)
 
         self.monitor_toggle_button = tk.Button(
             panel,
@@ -1150,14 +1268,6 @@ class CodexRGBApp:
             pady=7,
         )
         self.monitor_up_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
-        tk.Label(
-            panel,
-            text="KEY3：确认 Codex 请求  ·  摇杆左 DisplayPort / 右 HDMI / 上下亮度 ±5%",
-            bg=CARD_BG,
-            fg=SECONDARY_TEXT,
-            font=(UI_FONT, 8),
-            anchor="w",
-        ).pack(side="bottom", fill="x", pady=(12, 0))
         self.set_monitor_buttons("disabled")
 
     def make_quota_row(
@@ -1205,11 +1315,53 @@ class CodexRGBApp:
                 0, 0, width, 7, fill=canvas.bar_color, outline=""
             )
 
+    def draw_monitor_brightness(self, percent: int) -> None:
+        percent = max(0, min(100, int(percent)))
+        canvas = self.monitor_brightness_bar
+        canvas.delete("all")
+        canvas.create_rectangle(0, 0, 248, 8, fill="#dedee3", outline="")
+        width = round(248 * percent / 100)
+        if width:
+            canvas.create_rectangle(0, 0, width, 8, fill=APPLE_BLUE, outline="")
+
     @staticmethod
     def format_reset(timestamp: int | None) -> str:
         if not timestamp:
             return "重置时间 --"
         return "重置 " + time.strftime("%m-%d %H:%M", time.localtime(timestamp))
+
+    @staticmethod
+    def format_expiry(timestamp: int | None) -> str:
+        if not timestamp:
+            return "到期 --"
+        return "到期 " + time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(timestamp)
+        )
+
+    def apply_reset_credits(self, payload: dict | None) -> None:
+        payload = payload or {}
+        credits = [
+            credit for credit in payload.get("credits", [])
+            if isinstance(credit, dict) and credit.get("status", "available") == "available"
+        ]
+        try:
+            count = int(payload.get("available_count", len(credits)))
+        except (TypeError, ValueError):
+            count = len(credits)
+        self.reset_credit_count.set(f"{max(0, count)} 张")
+        for index, (row, title, expiry) in enumerate(self.reset_credit_rows):
+            if index < len(credits):
+                title.set(f"重置卡 {index + 1}")
+                expiry.set(self.format_expiry(credits[index].get("expires_at")))
+                if not row.winfo_manager():
+                    row.pack(fill="x", pady=(0, 5 if index < 2 else 0))
+            elif index == 0 and not credits:
+                title.set("暂无可用重置卡")
+                expiry.set("")
+                if not row.winfo_manager():
+                    row.pack(fill="x")
+            else:
+                row.pack_forget()
 
     @staticmethod
     def control_api(path: str, method: str = "GET") -> dict:
@@ -1312,9 +1464,21 @@ class CodexRGBApp:
             updated = time.strftime("%H:%M", time.localtime(fetched)) if fetched else "--:--"
             self.quota_updated.set(f"额度刷新 {updated}")
             self.lcd_status.set("● LCD HAT 与额度服务在线")
+            self.lcd_status_label.configure(fg=APPLE_GREEN)
+            self.apply_reset_credits(quota.get("reset_credits"))
         else:
             self.quota_updated.set("额度服务不可用")
             self.lcd_status.set("○ LCD HAT 服务不可用")
+            self.lcd_status_label.configure(fg=APPLE_RED)
+            self.reset_credit_count.set("-- 张")
+            for index, (row, title, expiry) in enumerate(self.reset_credit_rows):
+                if index == 0:
+                    title.set("额度服务不可用")
+                    expiry.set("")
+                    if not row.winfo_manager():
+                        row.pack(fill="x")
+                else:
+                    row.pack_forget()
 
         monitor = bundle.get("monitor", {})
         brightness = bundle.get("brightness", {})
@@ -1323,11 +1487,12 @@ class CodexRGBApp:
         else:
             self.monitor_input.set("信号源  不可用")
         if brightness.get("ok"):
-            self.monitor_brightness.set(
-                f"亮度  {int(brightness.get('brightness', 0))}%"
-            )
+            brightness_value = int(brightness.get("brightness", 0))
+            self.monitor_brightness.set(f"亮度  {brightness_value}%")
+            self.draw_monitor_brightness(brightness_value)
         else:
             self.monitor_brightness.set("亮度  --%")
+            self.draw_monitor_brightness(0)
         self.set_monitor_buttons(
             "normal" if monitor.get("ok") and brightness.get("ok") else "disabled"
         )
@@ -2058,9 +2223,9 @@ class CodexRGBApp:
                 elif kind == "brightness_status":
                     self.brightness_poll_busy = False
                     if value.get("ok") and value.get("brightness") is not None:
-                        self.monitor_brightness.set(
-                            f"亮度  {int(value['brightness'])}%"
-                        )
+                        brightness_value = int(value["brightness"])
+                        self.monitor_brightness.set(f"亮度  {brightness_value}%")
+                        self.draw_monitor_brightness(brightness_value)
                 elif kind == "brightness_status_error":
                     self.brightness_poll_busy = False
                 elif kind == "bt_result":

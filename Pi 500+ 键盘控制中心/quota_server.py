@@ -409,6 +409,7 @@ class AocMonitor:
             }
 def normalize(raw: dict) -> dict:
     snapshot = raw.get("rateLimitsByLimitId", {}).get("codex") or raw["rateLimits"]
+    reset_snapshot = raw.get("rateLimitResetCredits") or {}
 
     def window(value: dict | None) -> dict | None:
         if not value:
@@ -431,6 +432,19 @@ def normalize(raw: dict) -> dict:
         "credits": {
             "balance": credits.get("balance"),
             "unlimited": credits.get("unlimited", False),
+        },
+        "reset_credits": {
+            "available_count": reset_snapshot.get("availableCount", 0),
+            "credits": [
+                {
+                    "id": credit.get("id"),
+                    "status": credit.get("status"),
+                    "expires_at": credit.get("expiresAt"),
+                    "title": credit.get("title"),
+                }
+                for credit in reset_snapshot.get("credits", [])
+                if isinstance(credit, dict)
+            ],
         },
     }
 
