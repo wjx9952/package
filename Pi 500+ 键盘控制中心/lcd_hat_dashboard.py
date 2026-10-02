@@ -84,7 +84,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-09-23-web-connectivity-v2"
+LCD_BUILD_ID = "2026-10-02-key3-task-identity"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -605,6 +605,17 @@ def codex_confirmation_pending() -> bool:
     return pending_codex_confirmation() is not None
 
 
+def codex_call_still_pending(payload: dict) -> bool:
+    """Check this exact request, even if another task became newest."""
+    pending_codex_confirmation()
+    path = Path(str(payload.get("_codex_session_path", "")))
+    state = _confirmation_sessions.get(path)
+    if state is None:
+        # Missing evidence must never be reported as a successful approval.
+        return True
+    return str(payload.get("call_id", "")) in state["calls"]
+
+
 def quoted_field(text: str, field: str) -> str:
     """Extract a JSON/JavaScript-style quoted user-facing field."""
     match = re.search(
@@ -770,12 +781,10 @@ def confirm_codex_request(payload: dict) -> None:
     if result.returncode != 0:
         raise RuntimeError("could not send Codex confirmation key")
 
-    call_id = str(payload.get("call_id", ""))
     deadline = time.monotonic() + CONFIRMATION_RESULT_TIMEOUT_SECONDS
     confirmed = False
     while time.monotonic() < deadline:
-        pending = pending_codex_confirmation()
-        if pending is None or str(pending.get("call_id", "")) != call_id:
+        if not codex_call_still_pending(payload):
             confirmed = True
             break
         time.sleep(0.1)

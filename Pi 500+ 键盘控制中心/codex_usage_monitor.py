@@ -128,12 +128,27 @@ def load_thread_names(codex_home: Path) -> dict[str, str]:
 
 
 def session_id_from_path(path: Path) -> str:
+    # New desktop rollouts append a second UUID for the rollout itself. It is
+    # not the task ID and cannot be used in a codex://threads/ URL.
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            event = json.loads(handle.readline())
+        if event.get("type") == "session_meta":
+            payload = event.get("payload") or {}
+            identifier = payload.get("session_id") or payload.get("id")
+            if isinstance(identifier, str) and re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                identifier,
+            ):
+                return identifier
+    except (OSError, ValueError, AttributeError):
+        pass
     matches = re.findall(
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
         path.stem,
     )
-    return matches[-1] if matches else path.stem
+    return matches[0] if matches else path.stem
 
 
 def iter_json_lines(path: Path) -> Iterable[dict[str, Any]]:
