@@ -72,3 +72,13 @@ Windows 锁屏同步
 卸载前的最后一份灯光设置会保存在：
 
     ~/.local/state/pi500-keyboard-control-center/settings.last.json
+
+LCD 残影恢复
+------------
+
+如果屏幕长时间显示固定画面后出现暂时性残影，可运行：
+
+    ~/.local/share/pi500-keyboard-control-center/run-lcd-retention-recovery.sh 1800
+
+数字是播放动态修复画面的秒数。运行期间 LCD HAT 按键暂时不可用，结束或中断后会自动
+恢复 codex-lcd-hat.service。该工具可减轻液晶图像残留，但不能修复已经永久损坏的面板。

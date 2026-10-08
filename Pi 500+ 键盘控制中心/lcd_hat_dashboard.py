@@ -84,7 +84,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-02-key3-task-identity"
+LCD_BUILD_ID = "2026-10-08-panel-sleep-retention"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -1316,15 +1316,27 @@ class ST7789:
         standby = bool(standby)
         if standby == self.standby:
             return
-        self.standby = standby
         if standby:
+            # Do not leave the last action/confirmation page electrically held
+            # on the panel while its backlight is dark.  Clear GRAM first, turn
+            # the panel output off, and then enter the ST7789's real sleep mode.
             self.backlight.off()
+            self._write_payload(bytes(WIDTH * HEIGHT * 2))
             self._command(0x28)  # Display off
+            time.sleep(0.02)
+            self._command(0x10)  # Sleep in
+            time.sleep(0.12)
+            self.standby = True
         else:
-            self._command(0x29)  # Display on
-            self.backlight.on()
+            self.standby = False
+            self._wake_controller()
 
     def show(self, image: Image.Image, *, recover: bool = False) -> None:
+        # Keep the controller asleep while both computers are locked.  The
+        # event loop marks the display dirty on wake and then sends a complete
+        # fresh frame.
+        if self.standby:
+            return
         # SPI has no reliable presence/readback signal on this HAT. Only the
         # periodic recovery frame replays the slower wake sequence; ordinary
         # button feedback stays immediate.
