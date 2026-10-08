@@ -594,8 +594,8 @@ class CodexRGBApp:
                 row=index // 2,
                 column=index % 2,
                 sticky="ew",
-                padx=3,
-                pady=3,
+                padx=5,
+                pady=5,
             )
             colours.grid_columnconfigure(index % 2, weight=1)
             self.color_buttons[state] = button
@@ -1852,8 +1852,8 @@ class CodexRGBApp:
                 row=index // 2,
                 column=index % 2,
                 sticky="ew",
-                padx=3,
-                pady=3,
+                padx=5,
+                pady=5,
             )
             effect_grid.grid_columnconfigure(index % 2, weight=1)
         # Keep PhotoImage instances alive for as long as the dialog exists.

@@ -279,10 +279,22 @@ class Misc:
         alignment = QtCore.Qt.Alignment()
         if sticky and not ("e" in sticky and "w" in sticky) and not ("n" in sticky and "s" in sticky):
             alignment = _alignment(sticky)
-        layout.addWidget(self.qwidget, row, column, rowspan, columnspan, alignment)
         left, right = _pair(padx)
         top, bottom = _pair(pady)
-        self.qwidget.setContentsMargins(left, top, right, bottom)
+        # Grid padding belongs outside the styled control, not inside its
+        # border. A transparent cell keeps neighbouring rounded buttons apart.
+        host = getattr(self, "_grid_host", None)
+        if host is None:
+            host = QtWidgets.QWidget(self.parent.qwidget)
+            host.setStyleSheet("background:transparent;")
+            cell = QtWidgets.QHBoxLayout(host)
+            cell.setSpacing(0)
+            self._grid_host = host
+        cell = host.layout()
+        cell.setContentsMargins(left, top, right, bottom)
+        cell.addWidget(self.qwidget, 1, alignment)
+        layout.addWidget(host, row, column, rowspan, columnspan)
+        host.show()
         self.qwidget.show()
         self._manager = "grid"
 
