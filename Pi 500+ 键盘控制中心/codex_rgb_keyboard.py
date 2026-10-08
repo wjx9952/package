@@ -15,11 +15,12 @@ import subprocess
 import sys
 import threading
 import time
-import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
 from urllib.request import Request, urlopen
+
+import qt_tk_compat as tk
+from qt_tk_compat import messagebox
 
 
 APP_DIR = Path(__file__).resolve().parent

@@ -21,7 +21,7 @@ if [ ! -f "$APP_DIR/pi500_bt_keyboard_daemon.py" ]; then
     exit 1
 fi
 
-packages="python3 python3-tk python3-numpy python3-pil python3-gpiozero python3-spidev python3-dbus python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 libwayland-client0 libxkbcommon0 bluez curl ddcutil swaylock fonts-dejavu-core fonts-noto-cjk iputils-ping sudo rpi-keyboard-config rpi-keyboard-fw-update"
+packages="python3 python3-pyqt5 python3-numpy python3-pil python3-gpiozero python3-spidev python3-dbus python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 libwayland-client0 libxkbcommon0 bluez curl ddcutil swaylock fonts-dejavu-core fonts-noto-cjk iputils-ping sudo rpi-keyboard-config rpi-keyboard-fw-update"
 missing=""
 if command -v dpkg-query >/dev/null 2>&1; then
     for package in $packages; do

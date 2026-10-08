@@ -35,7 +35,7 @@ settings.json，并把旧服务和设置备份到：
 包含的组件
 ------------
 
-- Apple 风格桌面控制中心和系统托盘。
+- PyQt5 编写的圆角桌面控制中心和系统托盘。
 - Pi 500+ RGB 键盘状态灯及动态彩虹灯效。
 - Pi 500+ 蓝牙 LE 键盘后台、配对、键盘模式和 Windows Win+L。
 - Waveshare LCD HAT 的 Codex 用量、IP、TUN 公网出口 IP 与按键功能。
