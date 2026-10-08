@@ -7,7 +7,7 @@ DURATION=${1:-1800}
 cleanup() {
     systemctl --user start codex-lcd-hat.service || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT HUP INT TERM
 
 systemctl --user stop codex-lcd-hat.service
 /usr/bin/python3 "$APP_DIR/lcd_retention_recovery.py" --duration "$DURATION"
