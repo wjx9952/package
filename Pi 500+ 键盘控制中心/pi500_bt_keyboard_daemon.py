@@ -41,6 +41,9 @@ AGENT_MANAGER = "org.bluez.AgentManager1"
 APP_PATH = "/com/pi500/blekeyboard"
 SOCKET_PATH = "/run/pi500-bt-keyboard/control.sock"
 ACTIVITY_PATH = "/run/pi500-bt-keyboard/activity"
+UNLOCK_SEQUENCE_PATH = "/run/pi500-bt-keyboard/unlock-sequence"
+UNLOCK_SEQUENCE = "0502"
+UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 8.0
 KEYBOARD_NAME = "Raspberry Pi Ltd Pi 500+ Keyboard (ANSI)"
 PAIRING_SECONDS = 120
 HID_SERVICE_UUID = "00001812-0000-1000-8000-00805f9b34fb"
@@ -494,6 +497,13 @@ KEY_MAP = {
 }
 MODIFIERS = {29: 0, 42: 1, 56: 2, 125: 3,
              97: 4, 54: 5, 100: 6, 126: 7}
+DIGIT_KEYCODES = {
+    2: "1", 3: "2", 4: "3", 5: "4", 6: "5",
+    7: "6", 8: "7", 9: "8", 10: "9", 11: "0",
+    71: "7", 72: "8", 73: "9", 75: "4", 76: "5",
+    77: "6", 79: "1", 80: "2", 81: "3", 82: "0",
+}
+ENTER_KEYCODES = {28, 96}
 
 
 def keyboard_report(modifiers, keys):
@@ -544,6 +554,8 @@ class State:
         self.local_caps_lock = False
         self.pairing_source = None
         self.activity_write_lock = threading.Lock()
+        self.unlock_sequence_buffer = ""
+        self.unlock_sequence_last_at = 0.0
         self.activity_thread = threading.Thread(
             target=self._activity_loop,
             daemon=True,
@@ -560,6 +572,42 @@ class State:
                 os.chmod(ACTIVITY_PATH, 0o644)
         except OSError:
             pass
+
+    def note_unlock_sequence_key(self, code, value):
+        """Publish an event after 0502 + Enter while keyboard mode is active."""
+        if not self.active or value != 1:
+            return False
+        now = time.monotonic()
+        if now - self.unlock_sequence_last_at > UNLOCK_SEQUENCE_TIMEOUT_SECONDS:
+            self.unlock_sequence_buffer = ""
+        digit = DIGIT_KEYCODES.get(code)
+        if digit is not None:
+            self.unlock_sequence_buffer = (
+                self.unlock_sequence_buffer + digit
+            )[-len(UNLOCK_SEQUENCE):]
+            self.unlock_sequence_last_at = now
+            return False
+        if code not in ENTER_KEYCODES:
+            # Modifiers do not invalidate an otherwise valid numeric sequence.
+            if code not in MODIFIERS:
+                self.unlock_sequence_buffer = ""
+            return False
+        matched = self.unlock_sequence_buffer == UNLOCK_SEQUENCE
+        self.unlock_sequence_buffer = ""
+        self.unlock_sequence_last_at = now
+        if not matched:
+            return False
+        try:
+            with self.activity_write_lock:
+                os.makedirs(
+                    os.path.dirname(UNLOCK_SEQUENCE_PATH), mode=0o755, exist_ok=True
+                )
+                with open(UNLOCK_SEQUENCE_PATH, "w", encoding="ascii") as handle:
+                    handle.write(str(time.time_ns()) + "\n")
+                os.chmod(UNLOCK_SEQUENCE_PATH, 0o644)
+        except OSError:
+            return False
+        return True
 
     def _activity_loop(self):
         """Observe key activity without grabbing the keyboard when mode is off."""
@@ -781,6 +829,7 @@ class State:
                         continue
                     if value:
                         self.note_keyboard_activity()
+                    self.note_unlock_sequence_key(code, value)
                     target = modifiers if code in MODIFIERS else keys
                     if value:
                         target.add(code)

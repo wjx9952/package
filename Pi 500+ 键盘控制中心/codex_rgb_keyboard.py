@@ -53,6 +53,7 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 RUNTIME_STATUS_FILE = Path("/tmp/codex-rgb-keyboard-status.json")
 BT_KEYBOARD_SOCKET = "/run/pi500-bt-keyboard/control.sock"
 KEYBOARD_ACTIVITY_FILE = Path("/run/pi500-bt-keyboard/activity")
+KEYBOARD_UNLOCK_FILE = Path("/run/pi500-bt-keyboard/unlock-sequence")
 LOCAL_CONTROL_API = "http://127.0.0.1:8765"
 UI_FONT = "Noto Sans CJK SC"
 WINDOW_BG = "#f5f5f7"
@@ -91,6 +92,13 @@ _legacy_confirmation_check = codex_monitor.call_needs_confirmation
 def keyboard_activity_token() -> int:
     try:
         return int(KEYBOARD_ACTIVITY_FILE.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def keyboard_unlock_token() -> int:
+    try:
+        return int(KEYBOARD_UNLOCK_FILE.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return 0
 
@@ -445,6 +453,8 @@ class CodexRGBApp:
         self.lock_poll_busy = False
         self.system_locked: bool | None = None
         self.last_keyboard_activity = keyboard_activity_token()
+        self.last_keyboard_unlock = keyboard_unlock_token()
+        self.sequence_unlock_active = False
         self.lock_wake_until = 0.0
         self.monitor_busy = False
         self.brightness_poll_busy = False
@@ -902,10 +912,13 @@ class CodexRGBApp:
         previous = self.system_locked
         self.system_locked = locked
         activity = keyboard_activity_token()
+        unlock = keyboard_unlock_token()
         if locked and previous is not True:
             # Ignore the key that initiated locking. Only activity observed
             # after the lock screen is active is allowed to wake the lights.
             self.last_keyboard_activity = activity
+            self.last_keyboard_unlock = unlock
+            self.sequence_unlock_active = False
             self.lock_wake_until = 0.0
             self.preview_generation += 1
             self.preview_active = False
@@ -917,9 +930,17 @@ class CodexRGBApp:
         elif locked:
             now = time.monotonic()
             was_awake = self.lock_lighting_allowed()
-            if activity and activity != self.last_keyboard_activity:
+            if unlock and unlock != self.last_keyboard_unlock:
+                self.last_keyboard_unlock = unlock
+                self.sequence_unlock_active = True
+                self.lock_wake_until = 0.0
+                self.current_state = ""
+                if self.keyboard_mode_lighting_should_apply():
+                    self.activate_keyboard_mode_lighting()
+            elif activity and activity != self.last_keyboard_activity:
                 self.last_keyboard_activity = activity
-                self.lock_wake_until = now + LOCK_KEYBOARD_WAKE_SECONDS
+                if not self.sequence_unlock_active:
+                    self.lock_wake_until = now + LOCK_KEYBOARD_WAKE_SECONDS
                 if not was_awake:
                     self.current_state = ""
                     if self.keyboard_mode_lighting_should_apply():
@@ -935,6 +956,8 @@ class CodexRGBApp:
                 ).start()
         elif not locked and previous is not False:
             self.last_keyboard_activity = activity
+            self.last_keyboard_unlock = unlock
+            self.sequence_unlock_active = False
             self.lock_wake_until = 0.0
             if self.keyboard_mode_lighting_should_apply():
                 self.activate_keyboard_mode_lighting()
@@ -946,7 +969,10 @@ class CodexRGBApp:
             return True
         return (
             self.system_locked is True
-            and self.lock_wake_until > time.monotonic()
+            and (
+                self.sequence_unlock_active
+                or self.lock_wake_until > time.monotonic()
+            )
         )
 
     def turn_off_keyboard_lighting_worker(self) -> None:

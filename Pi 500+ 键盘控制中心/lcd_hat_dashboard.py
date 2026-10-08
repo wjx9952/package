@@ -50,6 +50,7 @@ JOYSTICK_RIGHT_PIN = 26
 JOYSTICK_PRESS_PIN = 13
 BT_KEYBOARD_SOCKET = "/run/pi500-bt-keyboard/control.sock"
 KEYBOARD_ACTIVITY_FILE = Path("/run/pi500-bt-keyboard/activity")
+KEYBOARD_UNLOCK_FILE = Path("/run/pi500-bt-keyboard/unlock-sequence")
 LOCK_KEYBOARD_WAKE_SECONDS = 10.0
 APP_DIR = Path(__file__).resolve().parent
 WINDOWS_SESSION_FILE = APP_DIR / "windows_session_state.json"
@@ -85,7 +86,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-08-key3-accessible-approve"
+LCD_BUILD_ID = "2026-10-08-keyboard-0502-unlock"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -204,6 +205,13 @@ def bt_keyboard_request(command: str) -> dict:
 def keyboard_activity_token() -> int:
     try:
         return int(KEYBOARD_ACTIVITY_FILE.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def keyboard_unlock_token() -> int:
+    try:
+        return int(KEYBOARD_UNLOCK_FILE.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return 0
 
@@ -1617,6 +1625,8 @@ def run(
     screen_standby = False
     both_sessions_locked = False
     last_keyboard_activity = keyboard_activity_token()
+    last_keyboard_unlock = keyboard_unlock_token()
+    sequence_unlock_active = False
     lock_wake_until = 0.0
     runtime_status = {
         "build_id": LCD_BUILD_ID,
@@ -1808,19 +1818,34 @@ def run(
                 next_lock_state_check = now + 0.25
                 sessions_locked = raspberry_pi_locked() and windows_session_locked()
                 activity = keyboard_activity_token()
+                unlock = keyboard_unlock_token()
                 if sessions_locked and not both_sessions_locked:
                     # Ignore the key sequence that initiated locking. A new
                     # key event after both sessions are locked wakes the LCD.
                     last_keyboard_activity = activity
+                    last_keyboard_unlock = unlock
+                    sequence_unlock_active = False
                     lock_wake_until = 0.0
-                elif sessions_locked and activity and activity != last_keyboard_activity:
-                    last_keyboard_activity = activity
-                    lock_wake_until = now + LOCK_KEYBOARD_WAKE_SECONDS
+                elif sessions_locked:
+                    if unlock and unlock != last_keyboard_unlock:
+                        last_keyboard_unlock = unlock
+                        sequence_unlock_active = True
+                        lock_wake_until = 0.0
+                    elif activity and activity != last_keyboard_activity:
+                        last_keyboard_activity = activity
+                        if not sequence_unlock_active:
+                            lock_wake_until = now + LOCK_KEYBOARD_WAKE_SECONDS
                 elif not sessions_locked:
                     last_keyboard_activity = activity
+                    last_keyboard_unlock = unlock
+                    sequence_unlock_active = False
                     lock_wake_until = 0.0
                 both_sessions_locked = sessions_locked
-                should_standby = sessions_locked and now >= lock_wake_until
+                should_standby = (
+                    sessions_locked
+                    and not sequence_unlock_active
+                    and now >= lock_wake_until
+                )
                 if should_standby != screen_standby:
                     screen_standby = should_standby
                     display.set_standby(screen_standby)
