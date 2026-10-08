@@ -1168,7 +1168,7 @@ class CodexRGBApp:
         panel.pack(side="left", fill="both")
         tk.Label(
             panel,
-            text="显示器",
+            text="LCD HAT 与显示器",
             bg=CARD_BG,
             fg=TEXT,
             font=(UI_FONT, 17, "bold"),
@@ -1176,7 +1176,7 @@ class CodexRGBApp:
         ).pack(fill="x")
         tk.Label(
             panel,
-            text="AOC 信号源与亮度控制",
+            text="LCD 残影恢复与 AOC 控制",
             bg=CARD_BG,
             fg=SECONDARY_TEXT,
             font=(UI_FONT, 9),
@@ -1268,6 +1268,32 @@ class CodexRGBApp:
             pady=7,
         )
         self.monitor_up_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+        recovery_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=10)
+        recovery_card.pack(fill="x", pady=(12, 0))
+        recovery_script = APP_DIR / "run-lcd-retention-recovery.sh"
+        for label, duration in (("残影修复 30 分钟", 1800), ("残影修复 2 小时", 7200)):
+            tk.Label(
+                recovery_card,
+                text=label,
+                bg=SUBTLE_BG,
+                fg=TEXT,
+                font=(UI_FONT, 9, "bold"),
+                anchor="w",
+            ).pack(fill="x", pady=(0, 3))
+            command = tk.StringVar(value=f"{recovery_script} {duration}")
+            entry = tk.Entry(
+                recovery_card,
+                textvariable=command,
+                state="readonly",
+                readonlybackground=CARD_BG,
+                fg=SECONDARY_TEXT,
+                relief="flat",
+                highlightbackground=BORDER,
+                highlightthickness=1,
+                font=("DejaVu Sans Mono", 7),
+            )
+            entry.pack(fill="x", ipady=4, pady=(0, 8 if duration == 1800 else 0))
         self.set_monitor_buttons("disabled")
 
     def make_quota_row(
