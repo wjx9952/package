@@ -1272,6 +1272,16 @@ class CodexRGBApp:
         recovery_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=10)
         recovery_card.pack(fill="x", pady=(12, 0))
         recovery_script = APP_DIR / "run-lcd-retention-recovery.sh"
+        self.recovery_copy_icon = tk.PhotoImage(width=16, height=16)
+        icon_colour = SECONDARY_TEXT
+        # Two overlapping outlined sheets form a compact, font-independent
+        # copy symbol that looks the same on every Raspberry Pi OS install.
+        for box in ((2, 2, 10, 10), (5, 5, 13, 13)):
+            left, top, right, bottom = box
+            self.recovery_copy_icon.put(icon_colour, to=(left, top, right + 1, top + 1))
+            self.recovery_copy_icon.put(icon_colour, to=(left, bottom, right + 1, bottom + 1))
+            self.recovery_copy_icon.put(icon_colour, to=(left, top, left + 1, bottom + 1))
+            self.recovery_copy_icon.put(icon_colour, to=(right, top, right + 1, bottom + 1))
         for label, duration in (("残影修复 30 分钟", 1800), ("残影修复 2 小时", 7200)):
             tk.Label(
                 recovery_card,
@@ -1281,9 +1291,12 @@ class CodexRGBApp:
                 font=(UI_FONT, 9, "bold"),
                 anchor="w",
             ).pack(fill="x", pady=(0, 3))
-            command = tk.StringVar(value=f"{recovery_script} {duration}")
+            command_text = f"{recovery_script} {duration}"
+            command = tk.StringVar(value=command_text)
+            command_row = tk.Frame(recovery_card, bg=SUBTLE_BG)
+            command_row.pack(fill="x", pady=(0, 8 if duration == 1800 else 0))
             entry = tk.Entry(
-                recovery_card,
+                command_row,
                 textvariable=command,
                 state="readonly",
                 readonlybackground=CARD_BG,
@@ -1293,8 +1306,37 @@ class CodexRGBApp:
                 highlightthickness=1,
                 font=("DejaVu Sans Mono", 7),
             )
-            entry.pack(fill="x", ipady=4, pady=(0, 8 if duration == 1800 else 0))
+            entry.pack(side="left", fill="x", expand=True, ipady=4)
+            copy_button = tk.Button(
+                command_row,
+                image=self.recovery_copy_icon,
+                command=lambda: None,
+                bg=SUBTLE_BG,
+                activebackground="#e8e8ed",
+                relief="flat",
+                bd=0,
+                padx=4,
+                pady=4,
+                cursor="hand2",
+            )
+            copy_button.configure(
+                command=lambda value=command_text, button=copy_button:
+                    self.copy_recovery_command(value, button)
+            )
+            copy_button.pack(side="right", padx=(6, 0))
         self.set_monitor_buttons("disabled")
+
+    def copy_recovery_command(self, command: str, button: tk.Button) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(command)
+        self.root.update_idletasks()
+        button.configure(image="", text="✓", fg=APPLE_GREEN, font=(UI_FONT, 10, "bold"))
+
+        def restore_icon() -> None:
+            if button.winfo_exists():
+                button.configure(image=self.recovery_copy_icon, text="", fg=TEXT)
+
+        self.root.after(1200, restore_icon)
 
     def make_quota_row(
         self,
