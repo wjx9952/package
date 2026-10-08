@@ -86,7 +86,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-08-keyboard-0502-unlock"
+LCD_BUILD_ID = "2026-10-08-input-keyboard-link"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -200,6 +200,21 @@ def bt_keyboard_request(command: str) -> dict:
                 break
             payload += chunk
     return json.loads(payload.decode("utf-8"))
+
+
+def ensure_keyboard_mode(enabled: bool, request=bt_keyboard_request) -> tuple[dict, bool]:
+    """Set keyboard mode only when its current state differs from the target."""
+    current = request("status")
+    if not current.get("ok"):
+        raise RuntimeError(current.get("error", "keyboard status failed"))
+    if bool(current.get("active")) == enabled:
+        return current, False
+    result = request("start" if enabled else "stop")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "keyboard mode failed"))
+    if bool(result.get("active")) != enabled:
+        raise RuntimeError("keyboard mode did not reach requested state")
+    return result, True
 
 
 def keyboard_activity_token() -> int:
@@ -2091,9 +2106,19 @@ def run(
                         last_input_select_at = now
                         display.show(render_action("Switching", input_name))
                         try:
-                            result = post_json(input_url)
-                            destination = result.get("to", {}).get("name", input_name)
-                            overlay = render_action("Switched", destination)
+                            post_json(input_url)
+                            keyboard_enabled = input_name == "DisplayPort"
+                            try:
+                                ensure_keyboard_mode(keyboard_enabled)
+                                overlay = render_action(
+                                    "Switched",
+                                    f"{'DP' if keyboard_enabled else 'HDMI'} + Keyboard "
+                                    f"{'ON' if keyboard_enabled else 'OFF'}",
+                                )
+                            except Exception:
+                                overlay = render_action(
+                                    "Input Switched", "Keyboard Failed", failed=True
+                                )
                         except Exception:
                             overlay = render_action("Failed", "Check AOC", failed=True)
                         overlay_until = time.monotonic() + 2.0

@@ -1,7 +1,7 @@
 Pi 500+ 键盘控制中心
 ====================
 
-当前版本：1.1.6-portable
+当前版本：1.1.7-portable
 
 每次功能新增、修复或行为调整时，必须同步更新 VERSION 和 CHANGELOG.md，
 写明版本号、日期以及本次更新内容，再提交到 GitHub。
@@ -44,7 +44,8 @@ LCD HAT 倒置安装后，KEY1 可随时开启或关闭蓝牙键盘模式。
 Codex 等待确认时，小屏幕会自动显示请求类型和具体原因；KEY3 用于后台确认该请求，
 长按 KEY3 满 2 秒会打开或置顶 ChatGPT。确认完成后自动返回 Codex Usage 页面。倒置后的摇杆上下仍以 5% 调整 AOC 亮度。窗口中的
 “切换信号源”和“亮度 ±5%”按钮可执行相同操作。
-倒置后的摇杆向左直接选择 DisplayPort，向右直接选择 HDMI。
+倒置后的摇杆向左直接选择 DisplayPort，并在键盘模式尚未开启时自动开启；向右直接
+选择 HDMI，并在键盘模式尚未关闭时自动关闭。键盘模式已经处于目标状态时不会重复操作。
 摇杆上下调节 AOC 亮度时，小屏幕先显示 Adjusting / Brightness；松开摇杆后
 显示 Adjusted / Brightness XX%，展示最终实际亮度，然后返回 Codex Usage。
 KEY2 用于切换 Clash Verge 的虚拟网卡（TUN）模式，小屏幕会短暂显示 TUN ON 或
