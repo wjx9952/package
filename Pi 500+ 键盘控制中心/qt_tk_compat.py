@@ -740,6 +740,11 @@ class _PaintCanvas(QtWidgets.QWidget):
             if item["kind"] == "rectangle":
                 painter.drawRect(rect)
             elif item["kind"] == "oval":
+                if item.get("rainbow"):
+                    gradient = QtGui.QLinearGradient(rect.topLeft(), rect.topRight())
+                    for index, colour in enumerate(("#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#00bcd4", "#007aff", "#af52de")):
+                        gradient.setColorAt(index / 6, QtGui.QColor(colour))
+                    painter.setBrush(QtGui.QBrush(gradient))
                 painter.drawEllipse(rect)
             elif item["kind"] == "arc":
                 painter.setBrush(QtCore.Qt.NoBrush)

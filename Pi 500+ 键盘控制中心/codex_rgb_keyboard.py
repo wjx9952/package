@@ -2053,10 +2053,11 @@ class CodexRGBApp:
         self.dot.itemconfigure(
             self.circle,
             fill=color,
-            state="hidden" if processing else "normal",
+            state="normal",
+            rainbow=processing,
         )
         for segment in self.processing_dot_segments:
-            self.dot.itemconfigure(segment, state="normal" if processing else "hidden")
+            self.dot.itemconfigure(segment, state="hidden")
 
     def completion_lighting_detail(self) -> str:
         completed = chinese_color_name(self.state_colors["completed"])
