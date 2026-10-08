@@ -14,7 +14,7 @@ import sys
 import uuid
 from typing import Any, Callable
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets, sip
 
 
 TclError = RuntimeError
@@ -27,6 +27,7 @@ def _application() -> QtWidgets.QApplication:
         app = QtWidgets.QApplication(sys.argv)
         app.setApplicationName("Pi 500+ 键盘控制中心")
         app.setStyle("Fusion")
+        app.setQuitOnLastWindowClosed(False)
     return app
 
 
@@ -131,12 +132,39 @@ class _Window(QtWidgets.QWidget):
         self.closed.emit()
 
 
+class _Scheduler(QtCore.QObject):
+    requested = QtCore.pyqtSignal(str, int, object)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.cancelled = set()
+        self.requested.connect(self.schedule, QtCore.Qt.QueuedConnection)
+
+    @QtCore.pyqtSlot(str, int, object)
+    def schedule(self, token, delay, callback):
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        def fire():
+            try:
+                if token not in self.cancelled:
+                    callback()
+            finally:
+                self.cancelled.discard(token)
+                timer.deleteLater()
+        timer.timeout.connect(fire)
+        timer.start(max(0, delay))
+
+
 class Misc:
     def __init__(self, parent: "Misc | None", qwidget: QtWidgets.QWidget, **kwargs: Any) -> None:
         _application()
         self.parent = parent
         self.qwidget = qwidget
         self._manager = ""
+        self._pack_host = None
+        self._children = []
+        if parent is not None:
+            parent._children.append(self)
         self._layout: QtWidgets.QLayout | None = None
         self._layout_kind = ""
         self._padding = (_pair(kwargs.get("padx", 0)), _pair(kwargs.get("pady", 0)))
@@ -177,6 +205,8 @@ class Misc:
             (px, py) = self._padding
             self._layout.setContentsMargins(px[0], py[0], px[1], py[1])
             self._layout.setSpacing(0)
+            if wanted == "v":
+                self._layout.setAlignment(QtCore.Qt.AlignTop)
             self.qwidget.setLayout(self._layout)
         if not isinstance(self._layout, QtWidgets.QBoxLayout):
             raise TclError("cannot mix pack and grid in one parent")
@@ -201,27 +231,42 @@ class Misc:
             self.qwidget.show()
             return
         layout = self.parent._ensure_pack_layout(side)
+        if self._pack_host is not None:
+            layout.removeWidget(self._pack_host)
+            self._pack_host.hide()
         xpad, ypad = _pair(padx), _pair(pady)
-        before, after = (xpad if side in ("left", "right") else ypad)
-        if before:
-            layout.addSpacing(before)
+        host = self._pack_host
+        if host is None:
+            host = QtWidgets.QWidget(self.parent.qwidget)
+            host.setStyleSheet("background:transparent;")
+            host_layout = QtWidgets.QHBoxLayout(host)
+            host_layout.setSpacing(0)
+            self._pack_host = host
+        host_layout = host.layout()
+        host_layout.setContentsMargins(xpad[0], ypad[0], xpad[1], ypad[1])
         alignment = QtCore.Qt.Alignment()
-        if anchor:
+        if fill not in ("x", "both") and side not in ("left", "right"):
+            alignment = QtCore.Qt.AlignHCenter
+        if anchor and fill not in ("x", "both"):
             alignment = _alignment(anchor)
         stretch = 1 if expand else 0
-        layout.addWidget(self.qwidget, stretch, alignment)
-        if after:
-            layout.addSpacing(after)
-        if fill in ("x", "both") or expand:
-            self.qwidget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, self.qwidget.sizePolicy().verticalPolicy())
-        if fill in ("y", "both") or expand:
-            self.qwidget.setSizePolicy(self.qwidget.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Expanding)
+        host_layout.addWidget(self.qwidget, 1, alignment)
+        policy = QtWidgets.QSizePolicy
+        self.qwidget.setSizePolicy(policy.Expanding if fill in ("x", "both") else policy.Preferred,
+                                   policy.Expanding if fill in ("y", "both") else policy.Preferred)
+        host.setSizePolicy(policy.Expanding if fill in ("x", "both") or expand else policy.Preferred,
+                           policy.Expanding if fill in ("y", "both") else policy.Fixed)
+        layout.addWidget(host, stretch)
+        if isinstance(self.qwidget, QtWidgets.QLabel) and side in ("left", "right"):
+            self.qwidget.setAlignment(_alignment("w" if side == "left" else "e"))
+        host.show()
         self.qwidget.show()
         self._manager = "pack"
 
     def pack_forget(self) -> None:
-        if self.qwidget.parentWidget() and self.qwidget.parentWidget().layout():
-            self.qwidget.parentWidget().layout().removeWidget(self.qwidget)
+        if self._pack_host is not None:
+            self.parent._layout.removeWidget(self._pack_host)
+            self._pack_host.hide()
         self.qwidget.hide()
         self._manager = ""
 
@@ -271,16 +316,18 @@ class Misc:
             self.qwidget.installEventFilter(self._filter)
 
     def after(self, milliseconds: int, callback: Callable[..., Any], *args: Any) -> QtCore.QTimer:
-        timer = QtCore.QTimer(self.qwidget)
-        timer.setSingleShot(True)
-        timer.timeout.connect(lambda: callback(*args))
-        timer.start(max(0, int(milliseconds)))
-        return timer
+        root = self
+        while root.parent is not None:
+            root = root.parent
+        token = uuid.uuid4().hex
+        root._scheduler.requested.emit(token, milliseconds, lambda: callback(*args))
+        return token
 
     def after_cancel(self, timer: QtCore.QTimer) -> None:
-        if timer:
-            timer.stop()
-            timer.deleteLater()
+        root = self
+        while root.parent is not None:
+            root = root.parent
+        root._scheduler.cancelled.add(timer)
 
     def destroy(self) -> None:
         if isinstance(self.qwidget, _Window):
@@ -306,7 +353,7 @@ class Misc:
         return self.qwidget.mapToGlobal(QtCore.QPoint(0, 0)).y()
 
     def winfo_exists(self) -> bool:
-        return self.qwidget is not None
+        return self.qwidget is not None and not sip.isdeleted(self.qwidget)
 
     def update_idletasks(self) -> None:
         _application().processEvents()
@@ -320,6 +367,7 @@ class Tk(Misc):
     def __init__(self) -> None:
         self.app = _application()
         super().__init__(None, _Window())
+        self._scheduler = _Scheduler(self.qwidget)
         self._close_callback: Callable[[], Any] | None = None
 
     def title(self, value: str) -> None:
@@ -343,6 +391,14 @@ class Tk(Misc):
 
     def withdraw(self) -> None:
         self.qwidget.hide()
+
+    def iconify(self) -> None:
+        self.qwidget.showMinimized()
+
+    def destroy(self) -> None:
+        super().destroy()
+        if self.parent is None:
+            self.app.quit()
 
     def deiconify(self) -> None:
         self.qwidget.showNormal()
@@ -419,6 +475,8 @@ class LabelFrame(Misc):
     def __init__(self, parent: Misc, text: str = "", **kwargs: Any) -> None:
         group = QtWidgets.QGroupBox(text, parent.qwidget)
         super().__init__(parent, group, **kwargs)
+        px, py = self._padding
+        self._padding = (px, (py[0] + 22, py[1]))
         group.setFont(_font(kwargs.get("font", ("Noto Sans CJK SC", 9))))
 
 
@@ -469,7 +527,7 @@ class Button(Misc):
         if width:
             button.setMinimumWidth(int(width) if image else int(width) * 8)
         if command:
-            button.clicked.connect(command)
+            button.clicked.connect(lambda _checked=False: self._command())
         self._apply_button_style(kwargs)
 
     def _apply_button_style(self, kwargs: dict[str, Any] | None = None) -> None:
@@ -494,7 +552,7 @@ class Button(Misc):
             except TypeError:
                 pass
             self._command = kwargs["command"]
-            self.qwidget.clicked.connect(self._command)
+            self.qwidget.clicked.connect(lambda _checked=False: self._command())
         if "image" in kwargs:
             image = kwargs["image"]
             self._image = image
@@ -593,8 +651,20 @@ class Scale(Misc):
                  command: Callable[[str], Any] | None = None, length: int | None = None,
                  **kwargs: Any) -> None:
         orientation = QtCore.Qt.Horizontal if orient == "horizontal" else QtCore.Qt.Vertical
-        slider = QtWidgets.QSlider(orientation, parent.qwidget)
-        super().__init__(parent, slider, width=0, **kwargs)
+        container = QtWidgets.QWidget(parent.qwidget)
+        slider = QtWidgets.QSlider(orientation, container)
+        super().__init__(parent, container, width=0, **kwargs)
+        self.slider = slider
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(0, 2, 0, 3)
+        layout.setSpacing(1)
+        number = QtWidgets.QLabel(container)
+        number.setAlignment(QtCore.Qt.AlignRight)
+        number.setFont(_font(kwargs.get("font")))
+        layout.addWidget(number)
+        layout.addWidget(slider)
+        number.setVisible(bool(kwargs.get("showvalue", True)))
+        slider.valueChanged.connect(lambda value: number.setText(str(value)))
         slider.setRange(int(from_), int(to))
         if length:
             slider.setMinimumWidth(int(length))
@@ -607,6 +677,7 @@ class Scale(Misc):
             if command:
                 command(str(value))
         slider.valueChanged.connect(changed)
+        number.setText(str(slider.value()))
         slider.setStyleSheet(
             "QSlider::groove:horizontal {height:6px; background:#dedee3; border-radius:3px;}"
             "QSlider::sub-page:horizontal {background:#0071e3; border-radius:3px;}"
