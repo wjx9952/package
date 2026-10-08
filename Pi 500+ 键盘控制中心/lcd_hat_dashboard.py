@@ -60,8 +60,9 @@ WTYPE_PATH = APP_DIR / "vendor" / "bin" / "wtype"
 WLRCTL_PATH = APP_DIR / "vendor" / "bin" / "wlrctl"
 CODEX_WINDOW_MATCH = "title:ChatGPT"
 FOCUS_SETTLE_SECONDS = 0.18
-CODEX_THREAD_SETTLE_SECONDS = 0.8
-CONFIRMATION_RESULT_TIMEOUT_SECONDS = 3.0
+CODEX_THREAD_SETTLE_SECONDS = 0.55
+CONFIRMATION_FAST_TIMEOUT_SECONDS = 0.8
+CONFIRMATION_RESULT_TIMEOUT_SECONDS = 6.0
 CONFIRMATION_CHECK_SECONDS = 0.2
 REFRESH_SECONDS = 60
 QUOTA_STALE_SECONDS = 5 * 60
@@ -84,8 +85,24 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-08-panel-sleep-retention"
+LCD_BUILD_ID = "2026-10-08-key3-accessible-approve"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
+
+CODEX_APPROVE_LABELS = {
+    "allow",
+    "allow once",
+    "approve",
+    "approve once",
+    "run",
+    "允许",
+    "允许一次",
+    "批准",
+    "批准一次",
+    "允許",
+    "允許一次",
+    "核准",
+    "核准一次",
+}
 
 FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -746,7 +763,83 @@ def focus_or_launch_window(match: str, command: list[str]) -> str:
     return "Opened"
 
 
-def confirm_codex_request(payload: dict) -> None:
+def normalized_accessible_label(value: str) -> str:
+    """Normalize a desktop accessibility label for exact matching."""
+    return " ".join(value.casefold().split())
+
+
+def click_codex_approve_button() -> bool:
+    """Click the visible one-time approval button through AT-SPI.
+
+    This function is run in a child process because a broken accessibility
+    bus can abort a GI process instead of raising a normal Python exception.
+    """
+    import gi
+
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
+
+    wanted = {normalized_accessible_label(label) for label in CODEX_APPROVE_LABELS}
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        desktop = Atspi.get_desktop(0)
+        pending = []
+        if desktop is not None:
+            for index in range(desktop.get_child_count()):
+                application = desktop.get_child_at_index(index)
+                if application is None:
+                    continue
+                application_name = normalized_accessible_label(
+                    application.get_name() or ""
+                )
+                if "chatgpt" in application_name or "codex" in application_name:
+                    pending.append(application)
+        visited = 0
+        while pending and visited < 6000:
+            accessible = pending.pop()
+            visited += 1
+            try:
+                name = normalized_accessible_label(accessible.get_name() or "")
+                role = accessible.get_role()
+                states = accessible.get_state_set()
+                showing = states is None or states.contains(Atspi.StateType.SHOWING)
+                sensitive = states is None or states.contains(Atspi.StateType.SENSITIVE)
+                if (
+                    role == Atspi.Role.PUSH_BUTTON
+                    and showing
+                    and sensitive
+                    and name in wanted
+                ):
+                    action = accessible.get_action_iface()
+                    if action is not None and action.get_n_actions() > 0:
+                        return bool(action.do_action(0))
+                for index in range(accessible.get_child_count()):
+                    child = accessible.get_child_at_index(index)
+                    if child is not None:
+                        pending.append(child)
+            except Exception:
+                continue
+        time.sleep(0.15)
+    return False
+
+
+def try_accessible_codex_approve() -> bool:
+    """Run the AT-SPI click helper without risking the LCD service process."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--click-codex-approve"],
+            env=desktop_environment(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def confirm_codex_request(payload: dict) -> str:
     """Open the exact pending task, confirm it, then restore the prior app."""
     if not WTYPE_PATH.is_file() or not WLRCTL_PATH.is_file():
         raise RuntimeError("Wayland helpers are not installed")
@@ -754,48 +847,73 @@ def confirm_codex_request(payload: dict) -> None:
     was_focused = run_desktop_command(
         [str(WLRCTL_PATH), "toplevel", "find", CODEX_WINDOW_MATCH, "state:active"]
     ).returncode == 0
-    session_id = str(payload.get("_codex_session_id", ""))
-    if session_id:
-        opened = run_desktop_command(
-            [
-                executable_path("chatgpt", "/usr/bin/chatgpt"),
-                f"codex://threads/{session_id}",
-            ]
+    method = ""
+    try:
+        session_id = str(payload.get("_codex_session_id", ""))
+        if session_id:
+            opened = run_desktop_command(
+                [
+                    executable_path("chatgpt", "/usr/bin/chatgpt"),
+                    f"codex://threads/{session_id}",
+                ]
+            )
+            if opened.returncode != 0:
+                raise RuntimeError("could not open the pending Codex task")
+            time.sleep(CODEX_THREAD_SETTLE_SECONDS)
+
+        codex_is_active = run_desktop_command(
+            [str(WLRCTL_PATH), "toplevel", "find", CODEX_WINDOW_MATCH, "state:active"]
+        ).returncode == 0
+        if not codex_is_active:
+            focused = run_desktop_command(
+                [str(WLRCTL_PATH), "toplevel", "focus", CODEX_WINDOW_MATCH]
+            )
+            if focused.returncode != 0:
+                raise RuntimeError("Codex window not found")
+            time.sleep(FOCUS_SETTLE_SECONDS)
+
+        # Enter is Codex's global approval shortcut and succeeds quickly in
+        # the normal case. Do not make every KEY3 press wait for the slower
+        # accessibility scan; use that only when the first Enter was swallowed
+        # by a focused sidebar button, link, menu or dialog.
+        result = run_desktop_command([str(WTYPE_PATH), "-k", "Return"])
+        if result.returncode != 0:
+            raise RuntimeError("could not send Codex confirmation key")
+        method = "keyboard"
+        fast_deadline = time.monotonic() + CONFIRMATION_FAST_TIMEOUT_SECONDS
+        while time.monotonic() < fast_deadline:
+            if not codex_call_still_pending(payload):
+                return method
+            time.sleep(0.05)
+
+        if try_accessible_codex_approve():
+            method = "accessibility-fallback"
+        else:
+            # The accessibility bridge may be unavailable. Refocus the Codex
+            # toplevel and retry its native shortcut once before giving up.
+            run_desktop_command(
+                [str(WLRCTL_PATH), "toplevel", "focus", CODEX_WINDOW_MATCH]
+            )
+            time.sleep(FOCUS_SETTLE_SECONDS)
+            result = run_desktop_command([str(WTYPE_PATH), "-k", "Return"])
+            if result.returncode != 0:
+                raise RuntimeError("could not retry Codex confirmation key")
+            method = "keyboard-retry"
+
+        deadline = time.monotonic() + CONFIRMATION_RESULT_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if not codex_call_still_pending(payload):
+                return method
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"Codex prompt did not accept the confirmation via {method}"
         )
-        if opened.returncode != 0:
-            raise RuntimeError("could not open the pending Codex task")
-        time.sleep(CODEX_THREAD_SETTLE_SECONDS)
-
-    codex_is_active = run_desktop_command(
-        [str(WLRCTL_PATH), "toplevel", "find", CODEX_WINDOW_MATCH, "state:active"]
-    ).returncode == 0
-    if not codex_is_active:
-        focused = run_desktop_command(
-            [str(WLRCTL_PATH), "toplevel", "focus", CODEX_WINDOW_MATCH]
-        )
-        if focused.returncode != 0:
-            raise RuntimeError("Codex window not found")
-        time.sleep(FOCUS_SETTLE_SECONDS)
-
-    result = run_desktop_command([str(WTYPE_PATH), "-k", "Return"])
-    if result.returncode != 0:
-        raise RuntimeError("could not send Codex confirmation key")
-
-    deadline = time.monotonic() + CONFIRMATION_RESULT_TIMEOUT_SECONDS
-    confirmed = False
-    while time.monotonic() < deadline:
-        if not codex_call_still_pending(payload):
-            confirmed = True
-            break
-        time.sleep(0.1)
-
-    if not was_focused:
-        time.sleep(FOCUS_SETTLE_SECONDS)
-        run_desktop_command(
-            [str(WTYPE_PATH), "-M", "alt", "-k", "Tab", "-m", "alt"]
-        )
-    if not confirmed:
-        raise RuntimeError("Codex prompt did not accept the confirmation")
+    finally:
+        if not was_focused:
+            time.sleep(FOCUS_SETTLE_SECONDS)
+            run_desktop_command(
+                [str(WTYPE_PATH), "-M", "alt", "-k", "Tab", "-m", "alt"]
+            )
 
 
 def website_reachable(url: str, *, use_head: bool = True) -> bool:
@@ -1845,10 +1963,13 @@ def run(
                         if confirmation is None:
                             overlay = render_action("Codex", "No Prompt", failed=True)
                             runtime_status["last_key3_result"] = "no_prompt"
+                            runtime_status["last_key3_error"] = ""
                         else:
-                            confirm_codex_request(confirmation)
+                            confirm_method = confirm_codex_request(confirmation)
                             overlay = render_action("Codex", "Confirmed")
                             runtime_status["last_key3_result"] = "confirmed"
+                            runtime_status["last_key3_method"] = confirm_method
+                            runtime_status["last_key3_error"] = ""
                             confirmation = None
                             confirmation_signature = ""
                             next_confirmation_check = time.monotonic() + 0.5
@@ -2078,7 +2199,10 @@ def main() -> None:
         default="http://127.0.0.1:8765/monitor/brightness/down",
     )
     parser.add_argument("--preview", type=Path, help="render a PNG without touching GPIO/SPI")
+    parser.add_argument("--click-codex-approve", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.click_codex_approve:
+        raise SystemExit(0 if click_codex_approve_button() else 1)
     if args.preview:
         try:
             data = get_json(args.quota_url)
