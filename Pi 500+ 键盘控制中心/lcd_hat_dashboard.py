@@ -51,7 +51,6 @@ JOYSTICK_PRESS_PIN = 13
 BT_KEYBOARD_SOCKET = "/run/pi500-bt-keyboard/control.sock"
 KEYBOARD_ACTIVITY_FILE = Path("/run/pi500-bt-keyboard/activity")
 KEYBOARD_UNLOCK_FILE = Path("/run/pi500-bt-keyboard/unlock-sequence")
-LCD_BRIGHTNESS_FILE = Path(__file__).resolve().parent / "lcd_brightness.json"
 LOCK_KEYBOARD_WAKE_SECONDS = 10.0
 APP_DIR = Path(__file__).resolve().parent
 WINDOWS_SESSION_FILE = APP_DIR / "windows_session_state.json"
@@ -69,7 +68,6 @@ CONFIRMATION_CHECK_SECONDS = 0.2
 REFRESH_SECONDS = 60
 QUOTA_STALE_SECONDS = 5 * 60
 DISPLAY_RECOVERY_SECONDS = 5
-LCD_BRIGHTNESS_POLL_SECONDS = 0.2
 PIXEL_SHIFT_SECONDS = 45
 PIXEL_SHIFT_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1))
 NETWORK_CHECK_SECONDS = 5
@@ -90,7 +88,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-lcd-frame-brightness"
+LCD_BUILD_ID = "2026-10-09-lcd-fixed-backlight"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -233,14 +231,6 @@ def keyboard_unlock_token() -> int:
         return int(KEYBOARD_UNLOCK_FILE.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return 0
-
-
-def lcd_brightness_value() -> int:
-    try:
-        payload = json.loads(LCD_BRIGHTNESS_FILE.read_text(encoding="utf-8"))
-        return max(1, min(100, int(payload.get("brightness", 100))))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return 100
 
 
 def _gdbus_call(destination: str, object_path: str, method: str, *args: str) -> str:
@@ -1436,10 +1426,7 @@ class ST7789:
 
         self.dc = OutputDevice(DC_PIN, active_high=True, initial_value=False)
         self.reset = OutputDevice(RESET_PIN, active_high=True, initial_value=True)
-        self.brightness = lcd_brightness_value()
-        self.backlight = OutputDevice(
-            BACKLIGHT_PIN, active_high=True, initial_value=False
-        )
+        self.backlight = OutputDevice(BACKLIGHT_PIN, active_high=True, initial_value=False)
         self.standby = False
         self.spi = spidev.SpiDev()
         self.spi.open(0, 0)
@@ -1453,12 +1440,6 @@ class ST7789:
         if data:
             self.dc.on()
             self.spi.writebytes2(data)
-
-    def _backlight_on(self) -> None:
-        self.backlight.on()
-
-    def set_brightness(self, brightness: int) -> None:
-        self.brightness = max(1, min(100, int(brightness)))
 
     def _initialize(self) -> None:
         self.reset.on()
@@ -1503,7 +1484,7 @@ class ST7789:
             self.backlight.off()
         else:
             self._command(0x29)
-            self._backlight_on()
+            self.backlight.on()
 
     def _write_payload(self, payload: bytes) -> None:
         self._command(0x2A, b"\x00\x00\x00\xef")
@@ -1543,17 +1524,12 @@ class ST7789:
         if recover:
             self._wake_controller()
         pixels = np.asarray(image.convert("RGB"), dtype=np.uint16)
-        # GPIO24 software PWM visibly flickers on this HAT at low duty cycles.
-        # Keep its transistor steadily on while the panel is visible and dim
-        # the complete framebuffer instead. uint16 safely holds 255 * 100.
-        if self.brightness < 100:
-            pixels = (pixels * self.brightness + 50) // 100
         rgb565 = ((pixels[:, :, 0] & 0xF8) << 8) | ((pixels[:, :, 1] & 0xFC) << 3) | (pixels[:, :, 2] >> 3)
         payload = rgb565.astype(">u2", copy=False).tobytes()
         self._write_payload(payload)
         if not self.standby and not self.backlight.value:
             self._command(0x29)  # Reveal only the completed first frame.
-            self._backlight_on()
+            self.backlight.on()
 
     def close(self) -> None:
         # Leave the panel electrically blank even when this service is merely
@@ -1619,7 +1595,6 @@ def run(
     next_lock_state_check = 0.0
     next_confirmation_check = 0.0
     next_display_recovery = time.monotonic() + DISPLAY_RECOVERY_SECONDS
-    next_lcd_brightness_check = 0.0
     next_pixel_shift = time.monotonic() + PIXEL_SHIFT_SECONDS
     pixel_shift_index = 0
     network_state = {
@@ -1777,12 +1752,6 @@ def run(
     try:
         while not stopping.is_set():
             now = time.monotonic()
-            if now >= next_lcd_brightness_check:
-                next_lcd_brightness_check = now + LCD_BRIGHTNESS_POLL_SECONDS
-                requested_brightness = lcd_brightness_value()
-                if requested_brightness != display.brightness:
-                    display.set_brightness(requested_brightness)
-                    dirty = True
             if now >= next_network_check and not network_state["checking"]:
                 network_state["checking"] = True
                 next_network_check = now + NETWORK_CHECK_SECONDS

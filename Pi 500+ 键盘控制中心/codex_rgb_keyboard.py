@@ -54,7 +54,6 @@ RUNTIME_STATUS_FILE = Path("/tmp/codex-rgb-keyboard-status.json")
 BT_KEYBOARD_SOCKET = "/run/pi500-bt-keyboard/control.sock"
 KEYBOARD_ACTIVITY_FILE = Path("/run/pi500-bt-keyboard/activity")
 KEYBOARD_UNLOCK_FILE = Path("/run/pi500-bt-keyboard/unlock-sequence")
-LCD_BRIGHTNESS_FILE = APP_DIR / "lcd_brightness.json"
 LOCAL_CONTROL_API = "http://127.0.0.1:8765"
 UI_FONT = "Noto Sans CJK SC"
 WINDOW_BG = "#f5f5f7"
@@ -102,26 +101,6 @@ def keyboard_unlock_token() -> int:
         return int(KEYBOARD_UNLOCK_FILE.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return 0
-
-
-def read_lcd_brightness() -> int:
-    try:
-        payload = json.loads(LCD_BRIGHTNESS_FILE.read_text(encoding="utf-8"))
-        return max(1, min(100, int(payload.get("brightness", 100))))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return 100
-
-
-def write_lcd_brightness(brightness: int) -> None:
-    brightness = max(1, min(100, int(brightness)))
-    temporary = LCD_BRIGHTNESS_FILE.with_name(
-        LCD_BRIGHTNESS_FILE.name + f".{os.getpid()}.tmp"
-    )
-    temporary.write_text(
-        json.dumps({"brightness": brightness}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, LCD_BRIGHTNESS_FILE)
 
 
 def write_lighting_runtime_status(status: dict) -> None:
@@ -477,8 +456,6 @@ class CodexRGBApp:
         self.last_keyboard_unlock = keyboard_unlock_token()
         self.sequence_unlock_active = False
         self.lock_wake_until = 0.0
-        self.lcd_brightness_variable = tk.IntVar(value=read_lcd_brightness())
-        self.lcd_brightness_write_after: str | None = None
         self.monitor_busy = False
         self.brightness_poll_busy = False
         state_brightness, state_colors = self.load_settings()
@@ -1319,35 +1296,6 @@ class CodexRGBApp:
         )
         self.monitor_up_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-        lcd_brightness_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=10)
-        lcd_brightness_card.pack(fill="x", pady=(12, 0))
-        tk.Label(
-            lcd_brightness_card,
-            text="小屏幕亮度",
-            bg=SUBTLE_BG,
-            fg=TEXT,
-            font=(UI_FONT, 10, "bold"),
-            anchor="w",
-        ).pack(fill="x")
-        self.lcd_brightness_slider = tk.Scale(
-            lcd_brightness_card,
-            from_=1,
-            to=100,
-            orient="horizontal",
-            variable=self.lcd_brightness_variable,
-            command=self.lcd_brightness_changed,
-            showvalue=True,
-            resolution=1,
-            length=235,
-            bg=SUBTLE_BG,
-            fg=TEXT,
-            font=(UI_FONT, 8),
-            troughcolor="#e5e5ea",
-            activebackground=APPLE_BLUE,
-            highlightthickness=0,
-        )
-        self.lcd_brightness_slider.pack(fill="x", pady=(4, 0))
-
         recovery_card = tk.Frame(panel, bg=SUBTLE_BG, padx=13, pady=10)
         recovery_card.pack(fill="x", pady=(12, 0))
         recovery_script = APP_DIR / "run-lcd-retention-recovery.sh"
@@ -1404,26 +1352,6 @@ class CodexRGBApp:
             )
             copy_button.pack(side="right", padx=(6, 0))
         self.set_monitor_buttons("disabled")
-
-    def lcd_brightness_changed(self, value: str) -> None:
-        brightness = max(1, min(100, int(float(value))))
-        self.lcd_brightness_variable.set(brightness)
-        if self.lcd_brightness_write_after is not None:
-            try:
-                self.root.after_cancel(self.lcd_brightness_write_after)
-            except tk.TclError:
-                pass
-        self.lcd_brightness_write_after = self.root.after(
-            60,
-            self.apply_lcd_brightness,
-        )
-
-    def apply_lcd_brightness(self) -> None:
-        self.lcd_brightness_write_after = None
-        try:
-            write_lcd_brightness(self.lcd_brightness_variable.get())
-        except OSError as error:
-            self.lcd_status.set("LCD 亮度保存失败：" + str(error)[:35])
 
     def copy_recovery_command(self, command: str, button: tk.Button) -> None:
         self.root.clipboard_clear()

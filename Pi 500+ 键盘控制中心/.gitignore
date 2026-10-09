@@ -3,5 +3,4 @@ __pycache__/
 backups/
 *.log
 windows_session_state.json
-lcd_brightness.json
 .DS_Store
