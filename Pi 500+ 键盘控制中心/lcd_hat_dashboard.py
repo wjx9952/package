@@ -70,6 +70,8 @@ REFRESH_SECONDS = 60
 QUOTA_STALE_SECONDS = 5 * 60
 DISPLAY_RECOVERY_SECONDS = 5
 LCD_BRIGHTNESS_POLL_SECONDS = 0.2
+LCD_PWM_FREQUENCY = 4_000
+LCD_MIN_DUTY_PERCENT = 15
 PIXEL_SHIFT_SECONDS = 45
 PIXEL_SHIFT_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1))
 NETWORK_CHECK_SECONDS = 5
@@ -90,7 +92,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-lcd-brightness-slider"
+LCD_BUILD_ID = "2026-10-09-lcd-pwm-stability"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -241,6 +243,17 @@ def lcd_brightness_value() -> int:
         return max(1, min(100, int(payload.get("brightness", 100))))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return 100
+
+
+def lcd_brightness_duty_cycle(brightness: int) -> float:
+    """Map the 1-100 UI range to a stable 15-100 percent PWM duty cycle."""
+    brightness = max(1, min(100, int(brightness)))
+    duty_percent = LCD_MIN_DUTY_PERCENT + (
+        (brightness - 1)
+        * (100 - LCD_MIN_DUTY_PERCENT)
+        / 99
+    )
+    return duty_percent / 100.0
 
 
 def _gdbus_call(destination: str, object_path: str, method: str, *args: str) -> str:
@@ -1441,7 +1454,7 @@ class ST7789:
             BACKLIGHT_PIN,
             active_high=True,
             initial_value=0.0,
-            frequency=800,
+            frequency=LCD_PWM_FREQUENCY,
         )
         self.standby = False
         self.spi = spidev.SpiDev()
@@ -1458,7 +1471,7 @@ class ST7789:
             self.spi.writebytes2(data)
 
     def _backlight_on(self) -> None:
-        self.backlight.value = self.brightness / 100.0
+        self.backlight.value = lcd_brightness_duty_cycle(self.brightness)
 
     def set_brightness(self, brightness: int) -> None:
         brightness = max(1, min(100, int(brightness)))
