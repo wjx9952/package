@@ -70,8 +70,6 @@ REFRESH_SECONDS = 60
 QUOTA_STALE_SECONDS = 5 * 60
 DISPLAY_RECOVERY_SECONDS = 5
 LCD_BRIGHTNESS_POLL_SECONDS = 0.2
-LCD_PWM_FREQUENCY = 4_000
-LCD_MIN_DUTY_PERCENT = 15
 PIXEL_SHIFT_SECONDS = 45
 PIXEL_SHIFT_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1))
 NETWORK_CHECK_SECONDS = 5
@@ -92,7 +90,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-lcd-pwm-stability"
+LCD_BUILD_ID = "2026-10-09-lcd-frame-brightness"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -243,17 +241,6 @@ def lcd_brightness_value() -> int:
         return max(1, min(100, int(payload.get("brightness", 100))))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return 100
-
-
-def lcd_brightness_duty_cycle(brightness: int) -> float:
-    """Map the 1-100 UI range to a stable 15-100 percent PWM duty cycle."""
-    brightness = max(1, min(100, int(brightness)))
-    duty_percent = LCD_MIN_DUTY_PERCENT + (
-        (brightness - 1)
-        * (100 - LCD_MIN_DUTY_PERCENT)
-        / 99
-    )
-    return duty_percent / 100.0
 
 
 def _gdbus_call(destination: str, object_path: str, method: str, *args: str) -> str:
@@ -1445,16 +1432,13 @@ class ST7789:
 
     def __init__(self) -> None:
         import spidev
-        from gpiozero import OutputDevice, PWMOutputDevice
+        from gpiozero import OutputDevice
 
         self.dc = OutputDevice(DC_PIN, active_high=True, initial_value=False)
         self.reset = OutputDevice(RESET_PIN, active_high=True, initial_value=True)
         self.brightness = lcd_brightness_value()
-        self.backlight = PWMOutputDevice(
-            BACKLIGHT_PIN,
-            active_high=True,
-            initial_value=0.0,
-            frequency=LCD_PWM_FREQUENCY,
+        self.backlight = OutputDevice(
+            BACKLIGHT_PIN, active_high=True, initial_value=False
         )
         self.standby = False
         self.spi = spidev.SpiDev()
@@ -1471,14 +1455,10 @@ class ST7789:
             self.spi.writebytes2(data)
 
     def _backlight_on(self) -> None:
-        self.backlight.value = lcd_brightness_duty_cycle(self.brightness)
+        self.backlight.on()
 
     def set_brightness(self, brightness: int) -> None:
-        brightness = max(1, min(100, int(brightness)))
-        was_visible = not self.standby and self.backlight.value > 0
-        self.brightness = brightness
-        if was_visible:
-            self._backlight_on()
+        self.brightness = max(1, min(100, int(brightness)))
 
     def _initialize(self) -> None:
         self.reset.on()
@@ -1563,6 +1543,11 @@ class ST7789:
         if recover:
             self._wake_controller()
         pixels = np.asarray(image.convert("RGB"), dtype=np.uint16)
+        # GPIO24 software PWM visibly flickers on this HAT at low duty cycles.
+        # Keep its transistor steadily on while the panel is visible and dim
+        # the complete framebuffer instead. uint16 safely holds 255 * 100.
+        if self.brightness < 100:
+            pixels = (pixels * self.brightness + 50) // 100
         rgb565 = ((pixels[:, :, 0] & 0xF8) << 8) | ((pixels[:, :, 1] & 0xFC) << 3) | (pixels[:, :, 2] >> 3)
         payload = rgb565.astype(">u2", copy=False).tobytes()
         self._write_payload(payload)
@@ -1797,6 +1782,7 @@ def run(
                 requested_brightness = lcd_brightness_value()
                 if requested_brightness != display.brightness:
                     display.set_brightness(requested_brightness)
+                    dirty = True
             if now >= next_network_check and not network_state["checking"]:
                 network_state["checking"] = True
                 next_network_check = now + NETWORK_CHECK_SECONDS
