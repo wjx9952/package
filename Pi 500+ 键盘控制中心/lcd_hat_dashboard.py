@@ -86,7 +86,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-08-input-keyboard-link"
+LCD_BUILD_ID = "2026-10-09-repeat-lock-fix"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -404,6 +404,25 @@ def lock_raspberry_pi() -> None:
     time.sleep(0.15)
     if process.poll() not in (None, 0):
         raise RuntimeError("system lock screen failed to start")
+
+
+def ensure_raspberry_pi_locked(
+    is_locked=None,
+    lock=None,
+) -> bool:
+    """Lock the Pi only when needed; return true when a new lock was started."""
+    is_locked = is_locked or raspberry_pi_locked
+    lock = lock or lock_raspberry_pi
+    if is_locked():
+        return False
+    try:
+        lock()
+    except Exception:
+        # A lock may have appeared between the initial check and launch.
+        if is_locked():
+            return False
+        raise
+    return True
 
 
 def restart_display_manager() -> None:
@@ -2035,7 +2054,7 @@ def run(
                     except Exception:
                         pass
                     try:
-                        lock_raspberry_pi()
+                        ensure_raspberry_pi_locked()
                         overlay = render_action(
                             "Locked",
                             "Pi + Windows" if windows_locked else "Pi Only",
