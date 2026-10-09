@@ -88,7 +88,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-lcd-fixed-backlight"
+LCD_BUILD_ID = "2026-10-09-key3-confirming-feedback"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -2060,6 +2060,14 @@ def run(
                             runtime_status["last_key3_result"] = "no_prompt"
                             runtime_status["last_key3_error"] = ""
                         else:
+                            # Confirmation can take several seconds when the
+                            # first Enter is swallowed and the accessibility
+                            # fallback/retry path is needed. Give immediate
+                            # visual feedback before this synchronous work.
+                            display.show(render_action("Codex", "Confirming..."))
+                            runtime_status["last_key3_result"] = "confirming"
+                            runtime_status["last_key3_error"] = ""
+                            write_runtime_status(runtime_status)
                             confirm_method = confirm_codex_request(confirmation)
                             overlay = render_action("Codex", "Confirmed")
                             runtime_status["last_key3_result"] = "confirmed"
