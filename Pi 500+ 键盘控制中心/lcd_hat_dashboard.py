@@ -86,7 +86,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-input-sequential-status"
+LCD_BUILD_ID = "2026-10-09-reset-time-white"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -1222,7 +1222,7 @@ def draw_quota_card(
             5,
         )
     draw.text((left + 11, bottom - (18 if compact else 20)), reset_text((window or {}).get("resets_at")),
-              font=F_RESET, fill=(112, 118, 129) if stale else (135, 146, 162))
+              font=F_RESET, fill=(166, 171, 181) if stale else (246, 248, 252))
 
 
 def render(
