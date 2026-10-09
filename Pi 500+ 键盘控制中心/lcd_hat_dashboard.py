@@ -86,7 +86,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-repeat-lock-fix"
+LCD_BUILD_ID = "2026-10-09-input-sequential-status"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -1593,6 +1593,9 @@ def run(
     confirmation_signature = ""
     overlay: Image.Image | None = None
     overlay_until = 0.0
+    queued_overlay: Image.Image | None = None
+    queued_overlay_after: Image.Image | None = None
+    queued_overlay_duration = 0.0
     dirty = True
     brightness_held = {1: False, -1: False}
     brightness_repeat_at = {1: 0.0, -1: 0.0}
@@ -2129,18 +2132,25 @@ def run(
                             keyboard_enabled = input_name == "DisplayPort"
                             try:
                                 ensure_keyboard_mode(keyboard_enabled)
-                                overlay = render_action(
-                                    "Switched",
-                                    f"{'DP' if keyboard_enabled else 'HDMI'} + Keyboard "
-                                    f"{'ON' if keyboard_enabled else 'OFF'}",
+                                keyboard_overlay = render_action(
+                                    "Keyboard",
+                                    "ON" if keyboard_enabled else "OFF",
                                 )
                             except Exception:
-                                overlay = render_action(
-                                    "Input Switched", "Keyboard Failed", failed=True
+                                keyboard_overlay = render_action(
+                                    "Keyboard", "Failed", failed=True
                                 )
+                            overlay = render_action("Switched", input_name)
+                            queued_overlay = keyboard_overlay
+                            queued_overlay_after = overlay
+                            queued_overlay_duration = 1.8
+                            overlay_until = time.monotonic() + 1.5
                         except Exception:
                             overlay = render_action("Failed", "Check AOC", failed=True)
-                        overlay_until = time.monotonic() + 2.0
+                            queued_overlay = None
+                            queued_overlay_after = None
+                            queued_overlay_duration = 0.0
+                            overlay_until = time.monotonic() + 2.0
                         dirty = True
 
             # Physical up/down are reversed by the 180-degree HAT mounting.
@@ -2181,7 +2191,17 @@ def run(
                             dirty = True
 
             if overlay is not None and time.monotonic() >= overlay_until:
-                overlay = None
+                if queued_overlay is not None and overlay is queued_overlay_after:
+                    overlay = queued_overlay
+                    overlay_until = time.monotonic() + queued_overlay_duration
+                    queued_overlay = None
+                    queued_overlay_after = None
+                    queued_overlay_duration = 0.0
+                else:
+                    overlay = None
+                    queued_overlay = None
+                    queued_overlay_after = None
+                    queued_overlay_duration = 0.0
                 dirty = True
             display_data, quota_animation_active = animated_quota_data(
                 data, quota_animations, time.monotonic()

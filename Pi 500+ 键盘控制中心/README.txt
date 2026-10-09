@@ -1,7 +1,7 @@
 Pi 500+ 键盘控制中心
 ====================
 
-当前版本：1.1.8-portable
+当前版本：1.1.9-portable
 
 每次功能新增、修复或行为调整时，必须同步更新 VERSION 和 CHANGELOG.md，
 写明版本号、日期以及本次更新内容，再提交到 GitHub。
@@ -46,6 +46,8 @@ Codex 等待确认时，小屏幕会自动显示请求类型和具体原因；KE
 “切换信号源”和“亮度 ±5%”按钮可执行相同操作。
 倒置后的摇杆向左直接选择 DisplayPort，并在键盘模式尚未开启时自动开启；向右直接
 选择 HDMI，并在键盘模式尚未关闭时自动关闭。键盘模式已经处于目标状态时不会重复操作。
+信号源切换完成后，小屏幕先显示 `Switched / DisplayPort` 或 `Switched / HDMI`，随后
+再单独显示 `Keyboard / ON` 或 `Keyboard / OFF`，不再用加号合并为一页。
 摇杆上下调节 AOC 亮度时，小屏幕先显示 Adjusting / Brightness；松开摇杆后
 显示 Adjusted / Brightness XX%，展示最终实际亮度，然后返回 Codex Usage。
 KEY2 用于切换 Clash Verge 的虚拟网卡（TUN）模式，小屏幕会短暂显示 TUN ON 或
