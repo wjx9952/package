@@ -541,7 +541,8 @@ def codex_monitor_module():
             if call.group(1) in {"request_permissions", "request_user_input"}:
                 return True
             return bool(re.search(
-                r"\bsandbox_permissions\s*:\s*[\"']require_escalated[\"']",
+                r"(?<!\w)[\"']?sandbox_permissions[\"']?\s*:\s*"
+                r"[\"']require_escalated[\"']",
                 tool_input,
             ))
 
