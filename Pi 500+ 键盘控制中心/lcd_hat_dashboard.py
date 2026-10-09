@@ -68,6 +68,8 @@ CONFIRMATION_CHECK_SECONDS = 0.2
 REFRESH_SECONDS = 60
 QUOTA_STALE_SECONDS = 5 * 60
 DISPLAY_RECOVERY_SECONDS = 5
+PIXEL_SHIFT_SECONDS = 45
+PIXEL_SHIFT_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1))
 NETWORK_CHECK_SECONDS = 5
 NETWORK_FAILURE_THRESHOLD = 2
 HTTP_TIMEOUT_SECONDS = 30
@@ -86,7 +88,7 @@ KEY3_COOLDOWN_SECONDS = 0.6
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-reset-time-white"
+LCD_BUILD_ID = "2026-10-09-lcd-retention-guards"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -1111,6 +1113,25 @@ def quota_is_stale(data: dict, now: float | None = None) -> bool:
     return (time.time() if now is None else now) - fetched_at > QUOTA_STALE_SECONDS
 
 
+def shift_frame(image: Image.Image, offset: tuple[int, int]) -> Image.Image:
+    """Move a complete frame without wrapping pixels across opposite edges."""
+    offset_x, offset_y = offset
+    if offset_x == 0 and offset_y == 0:
+        return image
+    width, height = image.size
+    source_left = max(0, -offset_x)
+    source_top = max(0, -offset_y)
+    source_right = min(width, width - offset_x)
+    source_bottom = min(height, height - offset_y)
+    shifted = Image.new(image.mode, image.size, (0, 0, 0))
+    if source_right > source_left and source_bottom > source_top:
+        shifted.paste(
+            image.crop((source_left, source_top, source_right, source_bottom)),
+            (max(0, offset_x), max(0, offset_y)),
+        )
+    return shifted
+
+
 def draw_rounded_gradient(
     image: Image.Image,
     box: tuple[int, int, int, int],
@@ -1511,11 +1532,20 @@ class ST7789:
             self.backlight.on()
 
     def close(self) -> None:
-        self.backlight.off()
-        self.spi.close()
-        self.dc.close()
-        self.reset.close()
-        self.backlight.close()
+        # Leave the panel electrically blank even when this service is merely
+        # restarted rather than the whole HAT losing power.
+        try:
+            self.set_standby(True)
+        except Exception:
+            try:
+                self.backlight.off()
+            except Exception:
+                pass
+        for resource in (self.spi, self.dc, self.reset, self.backlight):
+            try:
+                resource.close()
+            except Exception:
+                pass
 
 
 def run(
@@ -1565,6 +1595,8 @@ def run(
     next_lock_state_check = 0.0
     next_confirmation_check = 0.0
     next_display_recovery = time.monotonic() + DISPLAY_RECOVERY_SECONDS
+    next_pixel_shift = time.monotonic() + PIXEL_SHIFT_SECONDS
+    pixel_shift_index = 0
     network_state = {
         "online": False,
         "checking": False,
@@ -2203,6 +2235,11 @@ def run(
                     queued_overlay_after = None
                     queued_overlay_duration = 0.0
                 dirty = True
+            if now >= next_pixel_shift:
+                next_pixel_shift = now + PIXEL_SHIFT_SECONDS
+                pixel_shift_index = (pixel_shift_index + 1) % len(PIXEL_SHIFT_OFFSETS)
+                if overlay is None and confirmation is None:
+                    dirty = True
             display_data, quota_animation_active = animated_quota_data(
                 data, quota_animations, time.monotonic()
             )
@@ -2216,13 +2253,16 @@ def run(
                 display.show(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
-                    else render(
-                        display_data,
-                        network_online=network_online,
-                        local_ip=lan_ip,
-                        tun_ip=str(tun_state["ip"]),
-                        tun_enabled=bool(tun_state["enabled"]),
-                        tun_online=bool(tun_state["online"]),
+                    else shift_frame(
+                        render(
+                            display_data,
+                            network_online=network_online,
+                            local_ip=lan_ip,
+                            tun_ip=str(tun_state["ip"]),
+                            tun_enabled=bool(tun_state["enabled"]),
+                            tun_online=bool(tun_state["online"]),
+                        ),
+                        PIXEL_SHIFT_OFFSETS[pixel_shift_index],
                     )
                 )
                 dirty = False
@@ -2233,13 +2273,16 @@ def run(
                 display.show(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
-                    else render(
-                        display_data,
-                        network_online=network_online,
-                        local_ip=lan_ip,
-                        tun_ip=str(tun_state["ip"]),
-                        tun_enabled=bool(tun_state["enabled"]),
-                        tun_online=bool(tun_state["online"]),
+                    else shift_frame(
+                        render(
+                            display_data,
+                            network_online=network_online,
+                            local_ip=lan_ip,
+                            tun_ip=str(tun_state["ip"]),
+                            tun_enabled=bool(tun_state["enabled"]),
+                            tun_online=bool(tun_state["online"]),
+                        ),
+                        PIXEL_SHIFT_OFFSETS[pixel_shift_index],
                     ),
                     recover=True,
                 )
