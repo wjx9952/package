@@ -418,6 +418,44 @@ PROCESSING_EFFECTS = {
     "gradient_left_right": (5, 128, "固定彩虹", "固定的横向彩虹渐变，不移动"),
 }
 
+# Every practical non-rainbow Vial/QMK effect exposed by Raspberry Pi's
+# keyboard tooling. OFF and Direct are control modes rather than user-facing
+# idle effects; Solid Color remains available through the custom-color button.
+# Values are (firmware effect id, speed, Chinese name, description).
+IDLE_EFFECTS = {
+    "alphas_mods": (3, 128, "字母功能双色", "字母区与功能键使用不同明暗层次"),
+    "gradient_up_down": (4, 128, "上下渐变", "当前色相沿键盘纵向形成静态渐变"),
+    "breathing": (6, 90, "呼吸", "当前颜色平缓明暗呼吸"),
+    "band_sat": (7, 85, "饱和度色带", "饱和度色带横向移动"),
+    "band_val": (8, 85, "亮度色带", "亮度色带横向移动"),
+    "band_pinwheel_sat": (9, 85, "饱和度旋转", "饱和度色带围绕中心旋转"),
+    "band_pinwheel_val": (10, 85, "亮度旋转", "亮度色带围绕中心旋转"),
+    "band_spiral_sat": (11, 85, "饱和度螺旋", "饱和度色带以螺旋方式移动"),
+    "band_spiral_val": (12, 85, "亮度螺旋", "亮度色带以螺旋方式移动"),
+    "dual_beacon": (21, 80, "双信标", "两束当前颜色的光带绕中心旋转"),
+    "raindrops": (24, 100, "雨滴", "随机亮起当前颜色的稀疏雨滴"),
+    "jellybean_raindrops": (25, 100, "彩色雨滴", "随机出现不同颜色的稀疏雨滴"),
+    "hue_breathing": (26, 80, "色相呼吸", "呼吸过程中缓慢改变颜色"),
+    "hue_pendulum": (27, 75, "色相摆动", "颜色在有限色相范围内往返变化"),
+    "hue_wave": (28, 75, "色相波浪", "柔和的色相波浪扫过键盘"),
+    "typing_heatmap": (29, 100, "打字热力图", "根据按键频率累积热力颜色"),
+    "digital_rain": (30, 110, "数字雨", "模拟纵向落下的数字雨光点"),
+    "solid_reactive_simple": (31, 120, "单点响应", "按下的按键短暂点亮"),
+    "solid_reactive": (32, 120, "扩散响应", "灯光从按键位置向周围扩散"),
+    "solid_reactive_wide": (33, 110, "宽幅响应", "按键触发较宽范围的扩散"),
+    "solid_reactive_multiwide": (34, 110, "多重宽幅响应", "多个按键的宽幅扩散可同时保留"),
+    "solid_reactive_cross": (35, 115, "十字响应", "按键触发横纵十字光线"),
+    "solid_reactive_multicross": (36, 115, "多重十字响应", "多个十字光线可同时保留"),
+    "solid_reactive_nexus": (37, 100, "节点响应", "按键触发向四周连接的节点光线"),
+    "solid_reactive_multinexus": (38, 100, "多重节点响应", "多个节点扩散效果可同时保留"),
+    "splash": (39, 110, "彩色水波", "按键触发彩色水波扩散"),
+    "multisplash": (40, 110, "多重彩色水波", "多个彩色水波可同时扩散"),
+    "solid_splash": (41, 110, "纯色水波", "按键触发当前颜色的水波扩散"),
+    "solid_multisplash": (42, 110, "多重纯色水波", "多个纯色水波可同时扩散"),
+    "pixel_rain": (43, 100, "像素雨", "稀疏像素光点随机下落"),
+    "pixel_fractal": (44, 90, "像素分形", "像素光点形成不断变化的分形纹理"),
+}
+
 
 class CodexRGBApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -438,6 +476,7 @@ class CodexRGBApp:
         self.preview_generation = 0
         self.preview_active = False
         self.processing_preview_message: tk.StringVar | None = None
+        self.idle_preview_message: tk.StringVar | None = None
         self.busy = False
         self.closed = False
         self.refresh_scheduled = False
@@ -1672,6 +1711,8 @@ class CodexRGBApp:
     def valid_state_color(cls, state: str, value: str) -> bool:
         return (
             state == "processing" and value in PROCESSING_EFFECTS
+        ) or (
+            state == "idle" and value in IDLE_EFFECTS
         ) or cls.valid_color(value)
 
     def save_settings(self) -> None:
@@ -1695,6 +1736,9 @@ class CodexRGBApp:
     def choose_state_color(self, state: str) -> None:
         if state == "processing":
             self.choose_processing_effect()
+            return
+        if state == "idle":
+            self.choose_idle_effect()
             return
         selected = ask_rgb_color(
             self.root,
@@ -2017,6 +2061,221 @@ class CodexRGBApp:
             self.current_state = ""
             self.root.after(0, self.refresh)
 
+    def choose_idle_effect(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("空闲灯效")
+        dialog.configure(bg=WINDOW_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        card = tk.Frame(
+            dialog,
+            bg=CARD_BG,
+            padx=22,
+            pady=18,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        card.pack(padx=14, pady=14)
+        tk.Label(
+            card,
+            text="Codex 空闲状态灯效",
+            bg=CARD_BG,
+            fg=TEXT,
+            font=(UI_FONT, 14, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            card,
+            text="全部非彩虹原生灯效；点击任一模式可在键盘上预览 5 秒。",
+            bg=CARD_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+        ).pack(anchor="w", pady=(2, 10))
+
+        current = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
+        selected_effect = tk.StringVar(
+            value=current if current in IDLE_EFFECTS else ""
+        )
+        description = tk.StringVar(
+            value=(
+                IDLE_EFFECTS[current][3]
+                if current in IDLE_EFFECTS
+                else "当前使用自定义纯色常亮"
+            )
+        )
+        preview_message = tk.StringVar(value="选择模式即可预览，不会立即保存")
+        self.idle_preview_message = preview_message
+        effect_grid = tk.Frame(card, bg=CARD_BG)
+        effect_grid.pack(fill="x")
+        effect_images: dict[str, tk.PhotoImage] = {}
+        for index, (key, (_effect, _speed, name, detail)) in enumerate(
+            IDLE_EFFECTS.items()
+        ):
+            preview = self.color_swatch(key, width=40, height=14)
+            effect_images[key] = preview
+            tk.Radiobutton(
+                effect_grid,
+                text=name,
+                image=preview,
+                compound="left",
+                variable=selected_effect,
+                value=key,
+                command=lambda key=key, name=name, detail=detail: (
+                    description.set(detail),
+                    self.preview_idle_effect(key, name),
+                ),
+                indicatoron=False,
+                selectcolor="#dbeafe",
+                bg=SUBTLE_BG,
+                fg=TEXT,
+                activebackground="#e8e8ed",
+                activeforeground=TEXT,
+                relief="flat",
+                padx=7,
+                pady=5,
+                anchor="w",
+                width=112,
+            ).grid(
+                row=index // 3,
+                column=index % 3,
+                sticky="ew",
+                padx=4,
+                pady=4,
+            )
+            effect_grid.grid_columnconfigure(index % 3, weight=1)
+        dialog.effect_images = effect_images
+
+        tk.Label(
+            card,
+            textvariable=description,
+            bg=CARD_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+            anchor="w",
+        ).pack(fill="x", pady=(8, 5))
+        tk.Label(
+            card,
+            textvariable=preview_message,
+            bg=CARD_BG,
+            fg=APPLE_BLUE,
+            font=(UI_FONT, 9),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7))
+
+        actions = tk.Frame(card, bg=CARD_BG)
+        actions.pack(fill="x")
+        tk.Button(
+            actions,
+            text="应用所选灯效",
+            command=lambda: self.set_idle_effect(selected_effect.get(), dialog),
+            bg=APPLE_BLUE,
+            fg="white",
+            activebackground=APPLE_BLUE_ACTIVE,
+            activeforeground="white",
+            relief="flat",
+            padx=14,
+            pady=7,
+        ).pack(side="left", fill="x", expand=True)
+        tk.Button(
+            actions,
+            text="选择纯色…",
+            command=lambda: self.choose_idle_solid(dialog),
+            bg=SUBTLE_BG,
+            fg=TEXT,
+            activebackground="#e8e8ed",
+            activeforeground=TEXT,
+            relief="flat",
+            padx=14,
+            pady=7,
+        ).pack(side="left", fill="x", expand=True, padx=(8, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: self.cancel_idle_preview(dialog))
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (
+            self.root.winfo_width() - dialog.winfo_width()
+        ) // 2
+        y = self.root.winfo_rooty() + (
+            self.root.winfo_height() - dialog.winfo_height()
+        ) // 2
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def choose_idle_solid(self, dialog: tk.Toplevel) -> None:
+        self.cancel_idle_preview(dialog)
+        current = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
+        initial = current if self.valid_color(current) else DEFAULT_STATE_COLORS["idle"]
+        selected = ask_rgb_color(self.root, initial, title="选择空闲纯色")
+        if selected:
+            self.set_idle_effect(selected.lower())
+
+    def set_idle_effect(
+        self, value: str, dialog: tk.Toplevel | None = None
+    ) -> None:
+        if value not in IDLE_EFFECTS and not self.valid_color(value):
+            if self.idle_preview_message is not None:
+                self.idle_preview_message.set("请先选择一种灯效或自定义纯色")
+            return
+        self.preview_generation += 1
+        self.preview_active = False
+        self.idle_preview_message = None
+        if dialog is not None:
+            dialog.grab_release()
+            dialog.destroy()
+        self.state_colors["idle"] = value
+        self.update_color_button("idle")
+        self.save_settings()
+        self.current_state = ""
+        self.detail.set(self.completion_lighting_detail())
+        self.root.after(0, self.refresh)
+
+    def preview_idle_effect(self, key: str, name: str) -> None:
+        if key not in IDLE_EFFECTS:
+            return
+        self.preview_generation += 1
+        token = self.preview_generation
+        self.preview_active = True
+        if self.idle_preview_message is not None:
+            self.idle_preview_message.set(f"正在预览：{name}（5 秒）")
+        threading.Thread(
+            target=self.idle_preview_worker,
+            args=(key, token),
+            daemon=True,
+        ).start()
+
+    def idle_preview_worker(self, key: str, token: int) -> None:
+        try:
+            effect, speed, _name, _description = IDLE_EFFECTS[key]
+            _default_effect, hue, _default_speed, _label, _color = LIGHTING["idle"]
+            applied = self.apply_effect(
+                effect,
+                hue,
+                255,
+                speed,
+                self.state_brightness["idle"],
+                preview_token=token,
+            )
+            if not applied:
+                return
+            time.sleep(5.0)
+            self.results.put(("preview_done", token))
+        except Exception as error:
+            self.results.put(("preview_error", (token, str(error))))
+
+    def cancel_idle_preview(self, dialog: tk.Toplevel | None = None) -> None:
+        was_active = self.preview_active
+        self.preview_generation += 1
+        self.preview_active = False
+        self.idle_preview_message = None
+        if dialog is not None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+        if was_active:
+            self.current_state = ""
+            self.root.after(0, self.refresh)
+
     @staticmethod
     def color_swatch(color: str, width: int = 28, height: int = 14) -> tk.PhotoImage:
         image = tk.PhotoImage(width=width, height=height)
@@ -2048,6 +2307,45 @@ class CodexRGBApp:
                         f"{round(blue * 255):02x}"
                     )
                     image.put(value, to=(x, y, x + 1, y + 1))
+        elif color in IDLE_EFFECTS:
+            effect_id = IDLE_EFFECTS[color][0]
+            for y in range(height):
+                for x in range(width):
+                    hue = 0.58
+                    saturation = 0.82
+                    value_level = 0.82
+                    if effect_id in {3, 4}:
+                        value_level = 0.35 + 0.65 * y / max(1, height - 1)
+                    elif 7 <= effect_id <= 12:
+                        value_level = 0.35 + 0.65 * (
+                            0.5 + 0.5 * math.sin((x + y) * math.pi / 5)
+                        )
+                    elif effect_id == 21:
+                        angle = math.atan2(y - height / 2, x - width / 2)
+                        value_level = 0.35 + 0.65 * abs(math.cos(angle * 2))
+                    elif effect_id in {24, 25, 30, 43, 44}:
+                        seed = (x * 17 + y * 31 + effect_id * 13) % 23
+                        value_level = 1.0 if seed < 4 else 0.14
+                        if effect_id == 25:
+                            hue = ((x * 5 + y * 3) % max(1, width)) / max(1, width)
+                    elif effect_id in {26, 27, 28}:
+                        hue = (0.52 + x / max(1, width - 1) * 0.32) % 1
+                    elif effect_id == 29:
+                        hue = 0.33 - 0.33 * x / max(1, width - 1)
+                        value_level = 0.35 + 0.65 * x / max(1, width - 1)
+                    elif 31 <= effect_id <= 42:
+                        distance = abs(x - width / 2) + abs(y - height / 2)
+                        value_level = max(0.18, 1.0 - distance / max(1, width / 2))
+                        if effect_id in {39, 40}:
+                            hue = x / max(1, width - 1)
+                    red, green, blue = colorsys.hsv_to_rgb(
+                        hue % 1, saturation, value_level
+                    )
+                    value = (
+                        f"#{round(red * 255):02x}{round(green * 255):02x}"
+                        f"{round(blue * 255):02x}"
+                    )
+                    image.put(value, to=(x, y, x + 1, y + 1))
         else:
             image.put(color, to=(0, 0, width, height))
         return image
@@ -2060,6 +2358,8 @@ class CodexRGBApp:
             PROCESSING_EFFECTS[color][2]
             if color in PROCESSING_EFFECTS else chinese_color_name(color)
         )
+        if color in IDLE_EFFECTS:
+            color_name = IDLE_EFFECTS[color][2]
         self.color_buttons[state].configure(
             text=f"{self.color_labels[state]} · {color_name}",
             image=preview,
@@ -2087,8 +2387,13 @@ class CodexRGBApp:
 
     def completion_lighting_detail(self) -> str:
         completed = chinese_color_name(self.state_colors["completed"])
-        idle = chinese_color_name(self.state_colors["idle"])
-        return f"完成后{completed}呼吸 1 分钟，再转为{idle}常亮"
+        idle_value = self.state_colors["idle"]
+        idle = (
+            IDLE_EFFECTS[idle_value][2] + "灯效"
+            if idle_value in IDLE_EFFECTS
+            else chinese_color_name(idle_value) + "常亮"
+        )
+        return f"完成后{completed}呼吸 1 分钟，再转为{idle}"
 
     @staticmethod
     def color_to_hs(color: str) -> tuple[int, int]:
@@ -2111,6 +2416,11 @@ class CodexRGBApp:
             hue, saturation = self.color_to_hs(selected)
             color_name = chinese_color_name(selected)
             return 2, hue, saturation, 128, f"处理中 · {color_name}常亮", selected
+        if state == "idle":
+            selected = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
+            if selected in IDLE_EFFECTS:
+                effect, speed, effect_name, _description = IDLE_EFFECTS[selected]
+                return effect, hue, saturation, speed, f"空闲中 · {effect_name}", color
         if state in self.state_colors:
             color = self.state_colors[state]
             hue, saturation = self.color_to_hs(color)
@@ -2364,6 +2674,10 @@ class CodexRGBApp:
                             self.processing_preview_message.set(
                                 "预览结束，已恢复当前 Codex 状态"
                             )
+                        if self.idle_preview_message is not None:
+                            self.idle_preview_message.set(
+                                "预览结束，已恢复当前 Codex 状态"
+                            )
                         self.root.after(0, self.refresh)
                 elif kind == "preview_error":
                     token, error = value
@@ -2372,6 +2686,10 @@ class CodexRGBApp:
                         self.current_state = ""
                         if self.processing_preview_message is not None:
                             self.processing_preview_message.set(
+                                "预览失败：" + str(error)[:45]
+                            )
+                        if self.idle_preview_message is not None:
+                            self.idle_preview_message.set(
                                 "预览失败：" + str(error)[:45]
                             )
                         self.root.after(0, self.refresh)

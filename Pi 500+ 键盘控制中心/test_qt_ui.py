@@ -3,6 +3,7 @@ import threading
 import unittest
 from PyQt5 import QtCore, QtWidgets
 import qt_tk_compat as ui
+from codex_rgb_keyboard import CodexRGBApp, IDLE_EFFECTS
 
 
 class QtRegressionTests(unittest.TestCase):
@@ -49,6 +50,21 @@ class QtRegressionTests(unittest.TestCase):
         self.assertFalse(self.root.app.quitOnLastWindowClosed())
         self.root.iconify()
         self.root.deiconify()
+
+    def test_idle_effect_catalog_contains_every_non_rainbow_effect(self):
+        excluded_control_or_rainbow = {0, 1, 5, *range(13, 21), 22, 23}
+        expected = set(range(45)) - excluded_control_or_rainbow - {2}
+        self.assertEqual({entry[0] for entry in IDLE_EFFECTS.values()}, expected)
+        for key in IDLE_EFFECTS:
+            self.assertTrue(CodexRGBApp.valid_state_color("idle", key))
+            swatch = CodexRGBApp.color_swatch(key)
+            self.assertEqual((swatch.pixmap.width(), swatch.pixmap.height()), (28, 14))
+            app = CodexRGBApp.__new__(CodexRGBApp)
+            app.state_colors = {"idle": key}
+            effect, _hue, _sat, _speed, label, _color = app.lighting_for("idle")
+            self.assertEqual(effect, IDLE_EFFECTS[key][0])
+            self.assertIn(IDLE_EFFECTS[key][2], label)
+        self.assertFalse(CodexRGBApp.valid_state_color("idle", "cycle_left_right"))
 
 
 if __name__ == "__main__":
