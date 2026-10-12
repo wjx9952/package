@@ -1,0 +1,16 @@
+[Unit]
+Description=Bambu H2D LAN status monitor for Pi 500+ LCD
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.config/pi500-keyboard-control-center/bambu.json
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 @APP_DIR@/bambu_status_monitor.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

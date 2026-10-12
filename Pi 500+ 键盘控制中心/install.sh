@@ -17,6 +17,7 @@ BACKUP_DIR="$STATE_DIR/backups/$STAMP"
 
 required_files=(
     codex_rgb_keyboard.py tray_icon.py quota_server.py lcd_hat_dashboard.py
+    bambu_status_monitor.py bambu-config.example.json bambu-h2d-monitor.service
     codex_usage_monitor.py pi500_bt_keyboard_daemon.py run.sh settings.json
     restart-keyboard-control-center.sh restart-lcd-dashboard.sh
     codex-rgb.svg codex-rgb-tray.png codex-lcd-hat.service
@@ -37,7 +38,7 @@ mkdir -p "$BACKUP_DIR" "$TARGET_DIR" "$USER_SERVICE_DIR" "$APPLICATION_DIR"
 if [ -f "$TARGET_DIR/settings.json" ]; then
     cp -a "$TARGET_DIR/settings.json" "$BACKUP_DIR/settings.json"
 fi
-for service in codex-quota-server.service codex-lcd-hat.service; do
+for service in codex-quota-server.service codex-lcd-hat.service bambu-h2d-monitor.service; do
     if [ -f "$USER_SERVICE_DIR/$service" ]; then
         cp -a "$USER_SERVICE_DIR/$service" "$BACKUP_DIR/$service"
     fi
@@ -46,6 +47,7 @@ done
 echo "[2/7] 安装应用文件…"
 for file in \
     codex_rgb_keyboard.py tray_icon.py quota_server.py lcd_hat_dashboard.py \
+    bambu_status_monitor.py \
     codex_usage_monitor.py run.sh uninstall.sh uninstall-root.sh install-root.sh \
     pi500_bt_keyboard_daemon.py restart-keyboard-control-center.sh \
     restart-lcd-dashboard.sh
@@ -54,7 +56,7 @@ do
 done
 for file in \
     codex-rgb.svg codex-rgb-tray.png README.txt PORTABLE_README.txt CHANGELOG.md VERSION \
-    pi500-bt-keyboard.service
+    pi500-bt-keyboard.service bambu-config.example.json
 do
     install -m 0644 "$SOURCE_DIR/$file" "$TARGET_DIR/$file"
 done
@@ -88,6 +90,8 @@ sed "s|@APP_DIR@|$escaped_target|g" "$SOURCE_DIR/codex-quota-server.service" \
     > "$USER_SERVICE_DIR/codex-quota-server.service"
 sed "s|@APP_DIR@|$escaped_target|g" "$SOURCE_DIR/codex-lcd-hat.service" \
     > "$USER_SERVICE_DIR/codex-lcd-hat.service"
+sed "s|@APP_DIR@|$escaped_target|g" "$SOURCE_DIR/bambu-h2d-monitor.service" \
+    > "$USER_SERVICE_DIR/bambu-h2d-monitor.service"
 
 echo "[5/7] 创建应用菜单和桌面入口…"
 generated_desktop=$(mktemp)
@@ -111,8 +115,9 @@ fi
 
 echo "[6/7] 启动 LCD 与额度服务…"
 systemctl --user daemon-reload
-systemctl --user enable codex-quota-server.service codex-lcd-hat.service
+systemctl --user enable codex-quota-server.service bambu-h2d-monitor.service codex-lcd-hat.service
 systemctl --user restart codex-quota-server.service
+systemctl --user restart bambu-h2d-monitor.service || true
 if ! systemctl --user restart codex-lcd-hat.service; then
     echo "LCD 服务暂未启动；注销并重新登录后会自动启动。" >&2
 fi

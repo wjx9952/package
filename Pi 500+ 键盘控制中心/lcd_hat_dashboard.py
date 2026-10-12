@@ -72,6 +72,16 @@ QUOTA_STALE_SECONDS = 5 * 60
 DISPLAY_RECOVERY_SECONDS = 5
 PIXEL_SHIFT_SECONDS = 45
 PIXEL_SHIFT_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1))
+BAMBU_STATE_FILE = Path(
+    os.environ.get(
+        "BAMBU_STATE_FILE",
+        str(Path.home() / ".local/state/pi500-keyboard-control-center/bambu-state.json"),
+    )
+)
+BAMBU_STATE_CHECK_SECONDS = 1.0
+BAMBU_STATE_STALE_SECONDS = 90.0
+BAMBU_PAGE_SECONDS = 8.0
+BAMBU_COMPLETED_DISPLAY_SECONDS = 10 * 60
 NETWORK_CHECK_SECONDS = 5
 NETWORK_FAILURE_THRESHOLD = 2
 HTTP_TIMEOUT_SECONDS = 30
@@ -91,7 +101,7 @@ KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-browser-upload-confirmation"
+LCD_BUILD_ID = "2026-10-12-bambu-status-carousel"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -199,6 +209,8 @@ F_META = font(10)
 F_TIME = font(15, bold=True)
 F_CARD_LABEL = font(17, bold=True)
 F_RESET = font(11)
+F_BAMBU_JOB = font(14, bold=True)
+F_BAMBU_VALUE = font(15, bold=True)
 
 
 def cjk_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -1254,6 +1266,194 @@ def quota_is_stale(data: dict, now: float | None = None) -> bool:
     return (time.time() if now is None else now) - fetched_at > QUOTA_STALE_SECONDS
 
 
+def _number(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bounded_percent(value: object) -> int:
+    return max(0, min(100, round(_number(value))))
+
+
+def _ascii_job_name(value: object) -> str:
+    """Keep user-provided names renderable by the LCD's compact Latin font."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = "".join(character for character in text if character.isascii())
+    text = text.strip(" _-/")
+    return text or "Print Job"
+
+
+def _parse_filament_colour(value: object) -> tuple[int, int, int]:
+    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    if len(text) >= 6:
+        try:
+            return tuple(int(text[index:index + 2], 16) for index in (0, 2, 4))
+        except ValueError:
+            pass
+    return (32, 129, 238)
+
+
+def _colour_name(colour: tuple[int, int, int]) -> str:
+    palette = {
+        "Black": (15, 18, 22),
+        "White": (238, 240, 242),
+        "Gray": (105, 112, 120),
+        "Red": (235, 68, 62),
+        "Orange": (255, 149, 0),
+        "Yellow": (255, 204, 0),
+        "Green": (48, 209, 88),
+        "Cyan": (50, 215, 225),
+        "Blue": (32, 129, 238),
+        "Purple": (175, 82, 222),
+        "Pink": (255, 55, 95),
+        "Brown": (162, 132, 94),
+    }
+    return min(
+        palette,
+        key=lambda name: sum(
+            (actual - reference) ** 2
+            for actual, reference in zip(colour, palette[name])
+        ),
+    )
+
+
+def _active_filament(print_data: dict) -> tuple[str, str, tuple[int, int, int]]:
+    ams = print_data.get("ams")
+    if not isinstance(ams, dict):
+        ams = {}
+    active_id = str(ams.get("tray_now", print_data.get("tray_now", "")))
+    selected: dict = {}
+    units = ams.get("ams")
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            trays = unit.get("tray")
+            if not isinstance(trays, list):
+                continue
+            for tray in trays:
+                if isinstance(tray, dict) and str(tray.get("id", "")) == active_id:
+                    selected = tray
+                    break
+            if selected:
+                break
+    if not selected and isinstance(print_data.get("vir_slot"), dict):
+        selected = print_data["vir_slot"]
+    material = str(
+        selected.get("tray_type")
+        or selected.get("tray_sub_brands")
+        or "Filament"
+    ).strip()
+    material = re.sub(r"[^A-Za-z0-9+._-]", "", material) or "Filament"
+    colour = _parse_filament_colour(
+        selected.get("tray_color") or selected.get("cols") or ""
+    )
+    return material, _colour_name(colour), colour
+
+
+def _bambu_status_label(raw_status: object, connected: bool = True) -> tuple[str, tuple[int, int, int]]:
+    if not connected:
+        return "ERROR", (255, 69, 58)
+    status = str(raw_status or "").strip().upper()
+    if status in {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "SLICING"}:
+        return "PRINTING", (255, 149, 0)
+    if status in {"PAUSE", "PAUSED"}:
+        return "PAUSED", (255, 69, 58)
+    if status in {"FAILED", "FAIL", "ERROR", "FAULT", "CANCEL", "CANCELLED"}:
+        return "ERROR", (255, 69, 58)
+    if status in {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}:
+        return "COMPLETED", (52, 199, 89)
+    return "IDLE", (142, 142, 147)
+
+
+def bambu_status_from_payload(
+    payload: dict,
+    *,
+    source_mtime: float = 0.0,
+    now: float | None = None,
+) -> dict | None:
+    """Convert either the bundled monitor state or the original raw MQTT merge."""
+    print_data = payload.get("print")
+    if not isinstance(print_data, dict):
+        return None
+    epoch_now = time.time() if now is None else now
+    updated_at = _number(payload.get("updated_at"), source_mtime)
+    changed_at = _number(payload.get("status_changed_at"), updated_at)
+    connected = bool(payload.get("connected", True))
+    raw_status = print_data.get("gcode_state") or print_data.get("state")
+    status, status_colour = _bambu_status_label(raw_status, connected)
+    if (
+        status not in {"IDLE", "COMPLETED"}
+        and updated_at > 0
+        and epoch_now - updated_at > BAMBU_STATE_STALE_SECONDS
+    ):
+        status, status_colour = "ERROR", (255, 69, 58)
+
+    material, colour_name, filament_colour = _active_filament(print_data)
+    remaining_minutes = max(
+        0,
+        round(_number(
+            print_data.get("mc_remaining_time", print_data.get("remain_time", 0))
+        )),
+    )
+    finish_at = datetime.fromtimestamp(epoch_now + remaining_minutes * 60).astimezone()
+    return {
+        "status": status,
+        "status_colour": status_colour,
+        "raw_status": str(raw_status or ""),
+        "updated_at": updated_at,
+        "status_changed_at": changed_at,
+        "connected": connected,
+        "job_name": _ascii_job_name(
+            print_data.get("subtask_name") or print_data.get("gcode_file")
+        ),
+        "percent": _bounded_percent(
+            print_data.get("mc_percent", print_data.get("percent", 0))
+        ),
+        "layer": max(0, round(_number(print_data.get("layer_num")))),
+        "total_layers": max(0, round(_number(print_data.get("total_layer_num")))),
+        "nozzle": round(_number(print_data.get("nozzle_temper"))),
+        "nozzle_target": round(_number(print_data.get("nozzle_target_temper"))),
+        "bed": round(_number(print_data.get("bed_temper"))),
+        "bed_target": round(_number(print_data.get("bed_target_temper"))),
+        "remaining_minutes": remaining_minutes,
+        "finish_time": finish_at.strftime("%H:%M"),
+        "material": material,
+        "colour_name": colour_name,
+        "filament_colour": filament_colour,
+    }
+
+
+def load_bambu_status(
+    path: Path = BAMBU_STATE_FILE,
+    *,
+    now: float | None = None,
+) -> dict | None:
+    try:
+        stat = path.stat()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return bambu_status_from_payload(payload, source_mtime=stat.st_mtime, now=now)
+
+
+def bambu_page_active(status: dict | None, *, now: float | None = None) -> bool:
+    if not status:
+        return False
+    label = str(status.get("status", ""))
+    if label in {"PRINTING", "PAUSED", "ERROR"}:
+        return True
+    if label != "COMPLETED":
+        return False
+    epoch_now = time.time() if now is None else now
+    changed_at = _number(status.get("status_changed_at"))
+    return changed_at > 0 and epoch_now - changed_at <= BAMBU_COMPLETED_DISPLAY_SECONDS
+
+
 def shift_frame(image: Image.Image, offset: tuple[int, int]) -> Image.Image:
     """Move a complete frame without wrapping pixels across opposite edges."""
     offset_x, offset_y = offset
@@ -1468,6 +1668,98 @@ def render(
         draw.text((30, 131), message, font=F_SMALL, fill=(180, 137, 137))
     # The HAT is mounted upside down; rotate the complete UI by the opposite
     # landscape orientation so it remains readable.
+    return image.rotate(90)
+
+
+def _fit_lcd_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    text_font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> str:
+    if draw.textlength(text, font=text_font) <= max_width:
+        return text
+    suffix = "..."
+    shortened = text
+    while shortened and draw.textlength(shortened + suffix, font=text_font) > max_width:
+        shortened = shortened[:-1]
+    return (shortened.rstrip() + suffix) if shortened else suffix
+
+
+def render_bambu_status(status: dict) -> Image.Image:
+    """Render the compact Bambu page using the Codex Usage type hierarchy."""
+    image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    title = "Bambu Status"
+    title_width = draw.textlength(title, font=F_TITLE)
+    draw.text(((WIDTH - title_width) // 2, 2), title, font=F_TITLE, fill=(250, 250, 252))
+
+    status_colour = tuple(status.get("status_colour", (255, 149, 0)))
+    draw_status_dot(image, (10, 32, 18, 40), status_colour)
+    draw.text((23, 30), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
+
+    filament_colour = tuple(status.get("filament_colour", (32, 129, 238)))
+    draw_status_dot(image, (10, 46, 18, 54), filament_colour)
+    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
+    draw.text((23, 44), material, font=F_META, fill=(250, 250, 252))
+
+    job_name = _fit_lcd_text(
+        draw,
+        str(status.get("job_name", "Print Job")),
+        F_BAMBU_JOB,
+        WIDTH - 20,
+    )
+    draw.text((10, 63), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
+
+    percent = _bounded_percent(status.get("percent", 0))
+    draw.text((10, 79), f"{percent}%", font=F_PERCENT, fill=(43, 224, 235))
+    bar = (10, 113, 230, 121)
+    draw.rounded_rectangle(bar, radius=4, fill=(42, 47, 58))
+    if percent:
+        fill_right = bar[0] + max(7, round((bar[2] - bar[0]) * percent / 100))
+        draw_rounded_gradient(
+            image,
+            (bar[0], bar[1], fill_right, bar[3]),
+            (31, 202, 255),
+            (37, 238, 216),
+            4,
+        )
+    layer = int(status.get("layer", 0))
+    total_layers = int(status.get("total_layers", 0))
+    draw.text(
+        (10, 127),
+        f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
+        font=F_SMALL,
+        fill=(188, 196, 211),
+    )
+
+    draw.line((10, 148, 230, 148), fill=(35, 41, 50), width=1)
+    draw_status_dot(image, (10, 158, 16, 164), (255, 105, 45))
+    draw.text((21, 154), "Nozzle", font=F_META, fill=(188, 196, 211))
+    draw.text(
+        (10, 168),
+        f"{int(status.get('nozzle', 0))}° / {int(status.get('nozzle_target', 0))}°",
+        font=F_BAMBU_VALUE,
+        fill=(248, 249, 252),
+    )
+    draw_status_dot(image, (126, 158, 132, 164), (255, 204, 0))
+    draw.text((137, 154), "Bed", font=F_META, fill=(188, 196, 211))
+    draw.text(
+        (126, 168),
+        f"{int(status.get('bed', 0))}° / {int(status.get('bed_target', 0))}°",
+        font=F_BAMBU_VALUE,
+        fill=(248, 249, 252),
+    )
+
+    draw.line((10, 193, 230, 193), fill=(35, 41, 50), width=1)
+    draw.text(
+        (10, 200),
+        "Finish " + str(status.get("finish_time", "--:--")),
+        font=F_TIME,
+        fill=(248, 249, 252),
+    )
+    draw.ellipse((108, 229, 114, 235), fill=(53, 59, 70))
+    draw.ellipse((124, 229, 130, 235), fill=(37, 222, 224))
     return image.rotate(90)
 
 
@@ -1695,6 +1987,7 @@ def run(
     hdmi_url: str,
     brightness_up_url: str,
     brightness_down_url: str,
+    bambu_state_file: Path = BAMBU_STATE_FILE,
 ) -> None:
     from gpiozero import Button
 
@@ -1735,6 +2028,8 @@ def run(
     next_tun_network_check = 0.0
     next_lock_state_check = 0.0
     next_confirmation_check = 0.0
+    next_bambu_check = 0.0
+    next_dashboard_switch = 0.0
     next_display_recovery = time.monotonic() + DISPLAY_RECOVERY_SECONDS
     next_pixel_shift = time.monotonic() + PIXEL_SHIFT_SECONDS
     pixel_shift_index = 0
@@ -1747,6 +2042,10 @@ def run(
     quota_state = {"fetching": False}
     quota_results: queue.SimpleQueue[dict] = queue.SimpleQueue()
     quota_animations: dict[str, dict | None] = {"short": None, "long": None}
+    bambu_status: dict | None = None
+    bambu_signature = ""
+    bambu_active = False
+    show_bambu_page = False
     try:
         initial_tun_enabled = _clash_verge_tun_setting()
     except Exception:
@@ -1895,6 +2194,47 @@ def run(
     try:
         while not stopping.is_set():
             now = time.monotonic()
+            if now >= next_bambu_check:
+                next_bambu_check = now + BAMBU_STATE_CHECK_SECONDS
+                latest_bambu = load_bambu_status(
+                    bambu_state_file,
+                    now=time.time(),
+                )
+                latest_active = bambu_page_active(
+                    latest_bambu,
+                    now=time.time(),
+                )
+                latest_signature = (
+                    json.dumps(latest_bambu, sort_keys=True, ensure_ascii=True)
+                    if latest_bambu else ""
+                )
+                state_changed = latest_signature != bambu_signature
+                status_changed = (
+                    latest_bambu is not None
+                    and (
+                        bambu_status is None
+                        or latest_bambu.get("status") != bambu_status.get("status")
+                    )
+                )
+                bambu_status = latest_bambu
+                bambu_signature = latest_signature
+                if latest_active != bambu_active:
+                    bambu_active = latest_active
+                    show_bambu_page = latest_active
+                    next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                    dirty = True
+                elif latest_active and status_changed:
+                    # Important state changes (pause, error, completion) should
+                    # be visible immediately instead of waiting for the next turn.
+                    show_bambu_page = True
+                    next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                    dirty = True
+                elif state_changed and latest_active and show_bambu_page:
+                    dirty = True
+            if bambu_active and now >= next_dashboard_switch:
+                show_bambu_page = not show_bambu_page
+                next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                dirty = True
             if now >= next_network_check and not network_state["checking"]:
                 network_state["checking"] = True
                 next_network_check = now + NETWORK_CHECK_SECONDS
@@ -2438,18 +2778,23 @@ def run(
                     runtime_status["last_confirmation_rendered_at"] = (
                         datetime.now().astimezone().isoformat(timespec="seconds")
                     )
+                base_page = (
+                    render_bambu_status(bambu_status)
+                    if bambu_active and show_bambu_page and bambu_status is not None
+                    else render(
+                        display_data,
+                        network_online=network_online,
+                        local_ip=lan_ip,
+                        tun_ip=str(tun_state["ip"]),
+                        tun_enabled=bool(tun_state["enabled"]),
+                        tun_online=bool(tun_state["online"]),
+                    )
+                )
                 display.show(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
                     else shift_frame(
-                        render(
-                            display_data,
-                            network_online=network_online,
-                            local_ip=lan_ip,
-                            tun_ip=str(tun_state["ip"]),
-                            tun_enabled=bool(tun_state["enabled"]),
-                            tun_online=bool(tun_state["online"]),
-                        ),
+                        base_page,
                         PIXEL_SHIFT_OFFSETS[pixel_shift_index],
                     )
                 )
@@ -2458,18 +2803,23 @@ def run(
                 # Re-send the current page periodically. SPI writes do not
                 # fail when the panel is absent, so this is also our hot-plug
                 # recovery mechanism.
+                base_page = (
+                    render_bambu_status(bambu_status)
+                    if bambu_active and show_bambu_page and bambu_status is not None
+                    else render(
+                        display_data,
+                        network_online=network_online,
+                        local_ip=lan_ip,
+                        tun_ip=str(tun_state["ip"]),
+                        tun_enabled=bool(tun_state["enabled"]),
+                        tun_online=bool(tun_state["online"]),
+                    )
+                )
                 display.show(
                     overlay if overlay is not None
                     else render_confirmation(confirmation) if confirmation is not None
                     else shift_frame(
-                        render(
-                            display_data,
-                            network_online=network_online,
-                            local_ip=lan_ip,
-                            tun_ip=str(tun_state["ip"]),
-                            tun_enabled=bool(tun_state["enabled"]),
-                            tun_online=bool(tun_state["online"]),
-                        ),
+                        base_page,
                         PIXEL_SHIFT_OFFSETS[pixel_shift_index],
                     ),
                     recover=True,
@@ -2485,6 +2835,13 @@ def run(
                 runtime_status["quota_ok"] = bool(data.get("ok"))
                 runtime_status["quota_stale"] = quota_is_stale(data)
                 runtime_status["tun_online"] = bool(tun_state["online"])
+                runtime_status["bambu_status"] = (
+                    str(bambu_status.get("status", "")) if bambu_status else ""
+                )
+                runtime_status["bambu_page_active"] = bambu_active
+                runtime_status["bambu_page_visible"] = (
+                    bambu_active and show_bambu_page
+                )
                 write_runtime_status(runtime_status)
             stopping.wait(0.05)
     finally:
@@ -2518,7 +2875,17 @@ def main() -> None:
         "--brightness-down-url",
         default="http://127.0.0.1:8765/monitor/brightness/down",
     )
+    parser.add_argument(
+        "--bambu-state-file",
+        type=Path,
+        default=BAMBU_STATE_FILE,
+    )
     parser.add_argument("--preview", type=Path, help="render a PNG without touching GPIO/SPI")
+    parser.add_argument(
+        "--preview-bambu",
+        type=Path,
+        help="render the current Bambu status page without touching GPIO/SPI",
+    )
     parser.add_argument("--click-codex-approve", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--click-codex-reject", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -2526,6 +2893,12 @@ def main() -> None:
         raise SystemExit(0 if click_codex_approve_button() else 1)
     if args.click_codex_reject:
         raise SystemExit(0 if click_codex_reject_button() else 1)
+    if args.preview_bambu:
+        bambu_status = load_bambu_status(args.bambu_state_file)
+        if bambu_status is None:
+            raise SystemExit(f"Bambu state unavailable: {args.bambu_state_file}")
+        render_bambu_status(bambu_status).save(args.preview_bambu)
+        return
     if args.preview:
         try:
             data = get_json(args.quota_url)
@@ -2549,6 +2922,7 @@ def main() -> None:
         args.hdmi_url,
         args.brightness_up_url,
         args.brightness_down_url,
+        args.bambu_state_file,
     )
 
 

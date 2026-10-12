@@ -1,7 +1,8 @@
 [Unit]
 Description=Codex quota dashboard on Waveshare 1.3inch LCD HAT
-After=codex-quota-server.service
+After=codex-quota-server.service bambu-h2d-monitor.service
 Requires=codex-quota-server.service
+Wants=bambu-h2d-monitor.service
 
 [Service]
 Type=simple

@@ -40,6 +40,7 @@ settings.json，并把旧服务和设置备份到：
 - Pi 500+ 蓝牙 LE 键盘后台、配对、键盘模式、可选非彩虹灯效与灯效基准色、Windows Win+L。
 - Waveshare LCD HAT 的 Codex 用量、IP、TUN 公网出口 IP 与按键功能。
 - AOC 显示器 DDC/CI 信号源与亮度控制。
+- 可选 Bambu H2D 局域网 MQTT 状态页，打印期间与 Codex Usage 每 8 秒轮换。
 - Codex 及浏览器上传权限确认提示，以及 Key1 单按确认、双按拒绝。
 - Windows 锁屏状态同步脚本（windows-lock-sync 文件夹）。
 - 卸载脚本 uninstall.sh。
@@ -72,6 +73,23 @@ Windows 锁屏同步
 卸载前的最后一份灯光设置会保存在：
 
     ~/.local/state/pi500-keyboard-control-center/settings.last.json
+
+Bambu H2D 状态页
+--------------------
+
+先在打印机上开启局域网模式，然后创建本机私有配置：
+
+    mkdir -p ~/.config/pi500-keyboard-control-center
+    cp ~/.local/share/pi500-keyboard-control-center/bambu-config.example.json \
+       ~/.config/pi500-keyboard-control-center/bambu.json
+    chmod 600 ~/.config/pi500-keyboard-control-center/bambu.json
+
+编辑 `bambu.json`，填入 H2D 的局域网 IP、序列号和 LAN Access Code，再执行：
+
+    systemctl --user restart bambu-h2d-monitor.service codex-lcd-hat.service
+
+配置文件不在应用安装目录内，升级和重新安装不会覆盖；请不要把真实访问码
+提交到 GitHub。打印、暂停、错误时会持续显示 Bambu 轮播，完成后保留 10 分钟。
 
 LCD 残影恢复
 ------------

@@ -9,9 +9,11 @@ if [ -f "$APP_DIR/settings.json" ]; then
 fi
 
 systemctl --user disable --now codex-lcd-hat.service codex-quota-server.service \
+    bambu-h2d-monitor.service \
     2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/codex-lcd-hat.service"
 rm -f "$HOME/.config/systemd/user/codex-quota-server.service"
+rm -f "$HOME/.config/systemd/user/bambu-h2d-monitor.service"
 systemctl --user daemon-reload 2>/dev/null || true
 rm -f "$HOME/.local/share/applications/pi500-keyboard-control-center.desktop"
 rm -f "$HOME/.config/autostart/codex-rgb-keyboard.desktop"
