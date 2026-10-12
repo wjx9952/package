@@ -34,7 +34,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 WIDTH = 240
@@ -78,6 +78,12 @@ BAMBU_STATE_FILE = Path(
         str(Path.home() / ".local/state/pi500-keyboard-control-center/bambu-state.json"),
     )
 )
+BAMBU_CAMERA_FRAME_FILE = Path(
+    os.environ.get(
+        "BAMBU_CAMERA_FRAME_FILE",
+        str(BAMBU_STATE_FILE.with_name("bambu-camera.jpg")),
+    )
+)
 BAMBU_STATE_CHECK_SECONDS = 1.0
 BAMBU_STATE_STALE_SECONDS = 90.0
 BAMBU_PAGE_SECONDS = 8.0
@@ -101,7 +107,7 @@ KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-physical-key1-launch-fix"
+LCD_BUILD_ID = "2026-10-12-bambu-live-preview"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -1716,7 +1722,49 @@ def _fit_lcd_text(
     return (shortened.rstrip() + suffix) if shortened else suffix
 
 
-def render_bambu_status(status: dict) -> Image.Image:
+def _draw_bambu_preview(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+    frame_path: Path,
+    accent: tuple[int, int, int],
+) -> None:
+    left, top, right, bottom = box
+    size = (right - left + 1, bottom - top + 1)
+    try:
+        with Image.open(frame_path) as source:
+            preview = ImageOps.fit(
+                source.convert("RGB"), size, method=Image.Resampling.LANCZOS
+            )
+    except (OSError, ValueError):
+        preview = Image.new("RGB", size, (5, 10, 16))
+        preview_draw = ImageDraw.Draw(preview)
+        width, height = size
+        preview_draw.polygon(
+            [(11, 20), (width // 2, 8), (width - 10, 19), (width // 2, 31)],
+            fill=accent,
+        )
+        darker = tuple(max(0, channel - 65) for channel in accent)
+        preview_draw.polygon(
+            [(11, 20), (width // 2, 31), (width // 2, height - 7), (11, height - 18)],
+            fill=darker,
+        )
+        preview_draw.polygon(
+            [(width // 2, 31), (width - 10, 19), (width - 10, height - 18), (width // 2, height - 7)],
+            fill=tuple(max(0, channel - 35) for channel in accent),
+        )
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, size[0] - 1, size[1] - 1), radius=8, fill=255
+    )
+    image.paste(preview, (left, top), mask)
+    ImageDraw.Draw(image).rounded_rectangle(box, radius=8, outline=(29, 78, 100), width=1)
+
+
+def render_bambu_status(
+    status: dict,
+    *,
+    camera_frame_path: Path = BAMBU_CAMERA_FRAME_FILE,
+) -> Image.Image:
     """Render the compact Bambu page using the Codex Usage type hierarchy."""
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -1724,17 +1772,51 @@ def render_bambu_status(status: dict) -> Image.Image:
     title_width = draw.textlength(title, font=F_TITLE)
     draw.text(((WIDTH - title_width) // 2, 2), title, font=F_TITLE, fill=(250, 250, 252))
 
+    meta_colour = (250, 250, 252)
     connection_colour = (48, 209, 88) if status.get("connected", False) else (255, 69, 58)
     draw_status_dot(image, (10, 32, 18, 40), connection_colour)
-    draw.text((23, 30), str(status.get("printer_ip", "--")), font=F_META, fill=(250, 250, 252))
+    draw.text(
+        (23, 30),
+        "IP: " + str(status.get("printer_ip", "--")),
+        font=F_META,
+        fill=meta_colour,
+    )
+    updated_at = _number(status.get("updated_at"))
+    updated = "Updated " + (
+        datetime.fromtimestamp(updated_at).astimezone().strftime("%H:%M:%S")
+        if updated_at else "--:--:--"
+    )
+    updated_width = draw.textlength(updated, font=F_META)
+    updated_x = 231 - updated_width
+    draw.text((updated_x - 10, 30), "|", font=F_META, fill=(74, 104, 139))
+    draw.text((updated_x, 30), updated, font=F_META, fill=meta_colour)
 
     status_colour = tuple(status.get("status_colour", (255, 149, 0)))
     draw_status_dot(image, (10, 46, 18, 54), status_colour)
     draw.text((23, 44), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
 
-    # File, progress, material, layer and finish time form one Codex-style card.
+    # Compact temperature cards sit directly below the printer state.
     draw.rounded_rectangle(
-        (7, 60, 233, 181),
+        (7, 59, 116, 91), radius=8, fill=(10, 15, 21),
+        outline=(39, 49, 63), width=1,
+    )
+    draw.text((15, 63), "Nozzle", font=F_META, fill=(188, 196, 211))
+    nozzle = f"{int(status.get('nozzle', 0))}° / {int(status.get('nozzle_target', 0))}°"
+    nozzle_width = draw.textlength(nozzle, font=F_BAMBU_VALUE)
+    draw.text((108 - nozzle_width, 72), nozzle, font=F_BAMBU_VALUE, fill=(248, 249, 252))
+
+    draw.rounded_rectangle(
+        (123, 59, 233, 91), radius=8, fill=(10, 15, 21),
+        outline=(39, 49, 63), width=1,
+    )
+    draw.text((131, 63), "Bed", font=F_META, fill=(188, 196, 211))
+    bed = f"{int(status.get('bed', 0))}° / {int(status.get('bed_target', 0))}°"
+    bed_width = draw.textlength(bed, font=F_BAMBU_VALUE)
+    draw.text((225 - bed_width, 72), bed, font=F_BAMBU_VALUE, fill=(248, 249, 252))
+
+    # File, live model image and print progress form one large Codex-style card.
+    draw.rounded_rectangle(
+        (7, 97, 233, 239),
         radius=15,
         fill=(10, 15, 21),
         outline=(39, 49, 63),
@@ -1747,14 +1829,44 @@ def render_bambu_status(status: dict) -> Image.Image:
         F_BAMBU_JOB,
         WIDTH - 34,
     )
-    draw.text((17, 67), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
+    draw.text((17, 103), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
+
+    filament_colour = tuple(status.get("filament_colour", (32, 129, 238)))
+    _draw_bambu_preview(
+        image, (15, 122, 89, 174), camera_frame_path, filament_colour
+    )
+
+    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
+    draw.text((98, 123), material, font=F_SMALL, fill=(248, 249, 252))
+    layer = int(status.get("layer", 0))
+    total_layers = int(status.get("total_layers", 0))
+    draw.text(
+        (98, 145),
+        f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
+        font=F_SMALL,
+        fill=(188, 196, 211),
+    )
 
     percent = _bounded_percent(status.get("percent", 0))
-    draw.text((17, 83), f"{percent}%", font=F_PERCENT, fill=(43, 224, 235))
+    percent_text = f"{percent}%"
+    # Both progress labels share one baseline even though their font sizes differ.
+    progress_baseline = 194
+    draw.text(
+        (223, progress_baseline),
+        percent_text,
+        font=F_PERCENT,
+        fill=(43, 224, 235),
+        anchor="rs",
+    )
     remaining = _bambu_remaining_text(status.get("remaining_minutes", 0))
-    remaining_width = draw.textlength(remaining, font=F_TIME)
-    draw.text((223 - remaining_width, 95), remaining, font=F_TIME, fill=(248, 249, 252))
-    bar = (17, 117, 223, 125)
+    draw.text(
+        (17, progress_baseline),
+        remaining,
+        font=F_TIME,
+        fill=(248, 249, 252),
+        anchor="ls",
+    )
+    bar = (17, 201, 223, 209)
     draw.rounded_rectangle(bar, radius=4, fill=(42, 47, 58))
     if percent:
         fill_right = bar[0] + max(7, round((bar[2] - bar[0]) * percent / 100))
@@ -1765,37 +1877,10 @@ def render_bambu_status(status: dict) -> Image.Image:
             (37, 238, 216),
             4,
         )
-    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
-    draw.text((17, 132), material, font=F_SMALL, fill=(248, 249, 252))
-    layer = int(status.get("layer", 0))
-    total_layers = int(status.get("total_layers", 0))
     draw.text(
-        (17, 147),
-        f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
-        font=F_SMALL,
-        fill=(188, 196, 211),
-    )
-    draw.text(
-        (17, 162),
+        (17, 216),
         "Finish " + str(status.get("finish_time", "--:--")),
-        font=F_SMALL,
-        fill=(248, 249, 252),
-    )
-
-    draw_status_dot(image, (10, 191, 16, 197), (255, 105, 45))
-    draw.text((21, 187), "Nozzle", font=F_META, fill=(188, 196, 211))
-    draw.text(
-        (10, 201),
-        f"{int(status.get('nozzle', 0))}° / {int(status.get('nozzle_target', 0))}°",
-        font=F_BAMBU_VALUE,
-        fill=(248, 249, 252),
-    )
-    draw_status_dot(image, (126, 191, 132, 197), (255, 204, 0))
-    draw.text((137, 187), "Bed", font=F_META, fill=(188, 196, 211))
-    draw.text(
-        (126, 201),
-        f"{int(status.get('bed', 0))}° / {int(status.get('bed_target', 0))}°",
-        font=F_BAMBU_VALUE,
+        font=F_TIME,
         fill=(248, 249, 252),
     )
     return image.rotate(90)

@@ -6,8 +6,11 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import subprocess
+import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import paho.mqtt.client as mqtt
 
@@ -24,6 +27,15 @@ STATE_FILE = Path(
         str(Path.home() / ".local/state/pi500-keyboard-control-center/bambu-state.json"),
     )
 )
+CAMERA_FRAME_FILE = Path(
+    os.environ.get(
+        "BAMBU_CAMERA_FRAME_FILE",
+        str(STATE_FILE.with_name("bambu-camera.jpg")),
+    )
+)
+CAMERA_REFRESH_SECONDS = 15.0
+CAMERA_RETRY_SECONDS = 5.0
+CAMERA_ACTIVE_STATES = {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "PAUSE", "PAUSED"}
 
 
 def deep_merge(old: dict, new: dict) -> dict:
@@ -62,6 +74,7 @@ class BambuMonitor:
         self.connected = False
         self.status_changed_at = time.time()
         self.last_gcode_state = ""
+        self.camera_frame_file = CAMERA_FRAME_FILE
 
         self.client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -108,6 +121,69 @@ class BambuMonitor:
             qos=0,
         )
 
+    def capture_camera_frame(self, rtsp_url: str) -> bool:
+        """Atomically refresh the small live model preview from the LAN camera."""
+        if not rtsp_url.startswith("rtsps://") or "@" in rtsp_url:
+            return False
+        authenticated = rtsp_url.replace(
+            "rtsps://",
+            f"rtsps://bblp:{quote(self.access_code, safe='')}@",
+            1,
+        )
+        self.camera_frame_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.camera_frame_file.with_name(
+            self.camera_frame_file.name + f".{os.getpid()}.tmp.jpg"
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/ffmpeg",
+                    "-hide_banner", "-loglevel", "error",
+                    "-rtsp_transport", "tcp",
+                    "-i", authenticated,
+                    "-frames:v", "1",
+                    "-vf", "scale=320:-2",
+                    "-q:v", "4",
+                    "-y", str(temporary),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=12,
+                check=False,
+            )
+            if result.returncode != 0 or not temporary.is_file():
+                return False
+            if temporary.stat().st_size < 512:
+                return False
+            os.replace(temporary, self.camera_frame_file)
+            return True
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def camera_loop(self) -> None:
+        while True:
+            print_data = self.raw_state.get("print")
+            if not isinstance(print_data, dict):
+                print_data = {}
+            state = str(
+                print_data.get("gcode_state") or print_data.get("state") or ""
+            ).strip().upper()
+            ipcam = print_data.get("ipcam")
+            rtsp_url = (
+                str(ipcam.get("rtsp_url") or "")
+                if isinstance(ipcam, dict) else ""
+            )
+            if self.connected and state in CAMERA_ACTIVE_STATES and rtsp_url:
+                self.capture_camera_frame(rtsp_url)
+                time.sleep(CAMERA_REFRESH_SECONDS)
+            else:
+                time.sleep(CAMERA_RETRY_SECONDS)
+
     def on_connect(self, client, userdata, flags, reason_code, properties) -> None:
         del userdata, flags, properties
         if reason_code.is_failure:
@@ -152,6 +228,7 @@ class BambuMonitor:
         self.write_state()
 
     def run(self) -> None:
+        threading.Thread(target=self.camera_loop, daemon=True).start()
         self.client.connect(self.host, self.port, keepalive=60)
         self.client.loop_forever()
 

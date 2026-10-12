@@ -2,6 +2,10 @@
 """Unit tests for Bambu MQTT state parsing and the LCD page."""
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PIL import Image
 
 import bambu_status_monitor as monitor
 import lcd_hat_dashboard as dashboard
@@ -90,6 +94,16 @@ class BambuStatusTests(unittest.TestCase):
         image = dashboard.render_bambu_status(status)
         self.assertEqual(image.size, (240, 240))
         self.assertGreater(len(image.getcolors(maxcolors=100_000)), 10)
+
+    def test_bambu_page_uses_live_camera_frame_when_available(self) -> None:
+        status = dashboard.bambu_status_from_payload(sample_payload(), now=1_001.0)
+        with TemporaryDirectory() as directory:
+            frame = Path(directory) / "camera.jpg"
+            Image.new("RGB", (120, 80), (231, 17, 199)).save(frame)
+            image = dashboard.render_bambu_status(status, camera_frame_path=frame)
+        colours = image.getcolors(maxcolors=100_000)
+        self.assertIsNotNone(colours)
+        self.assertTrue(any(red > 180 and blue > 150 for _, (red, _green, blue) in colours))
 
     def test_monitor_deep_merge_keeps_unchanged_fields(self) -> None:
         state = {"print": {"gcode_state": "RUNNING", "mc_percent": 10}}
