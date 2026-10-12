@@ -91,7 +91,7 @@ KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-key3-double-press-reject"
+LCD_BUILD_ID = "2026-10-12-browser-upload-confirmation"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -734,6 +734,10 @@ def quoted_field(text: str, field: str) -> str:
 
 def confirmation_text(payload: dict) -> tuple[str, str]:
     """Create a compact Chinese title and user-facing request description."""
+    monitor = codex_monitor_module()
+    if monitor.browser_use_permission_kind(payload) == "upload":
+        return "Codex 需要确认", "浏览器请求上传文件"
+
     name = str(payload.get("name", ""))
     raw = payload.get("arguments", payload.get("input", ""))
     if not isinstance(raw, str):

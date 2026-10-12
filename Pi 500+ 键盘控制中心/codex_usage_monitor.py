@@ -199,7 +199,37 @@ def parse_event_datetime(timestamp: str) -> datetime | None:
         return None
 
 
+def browser_use_permission_kind(payload: dict[str, Any]) -> str:
+    """Return the permission kind for a browser-use call that opens a prompt.
+
+    Browser file uploads are logged as an unresolved ``mcp__cua_repl.js``
+    function call while the desktop displays its Browser use permission dialog.
+    The matching function-call output is appended only after the user allows or
+    denies the upload, so it fits the same pending-call state machine as native
+    Codex permission requests.
+    """
+    namespace = str(payload.get("namespace", ""))
+    name = str(payload.get("name", ""))
+    if name != "js" or not namespace.endswith("cua_repl"):
+        return ""
+    arguments = payload.get("arguments", payload.get("input", ""))
+    if not isinstance(arguments, str):
+        return ""
+    try:
+        parsed = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = {}
+    code = parsed.get("code", "") if isinstance(parsed, dict) else ""
+    if not isinstance(code, str):
+        return ""
+    if re.search(r"\.\s*setFiles\s*\(", code):
+        return "upload"
+    return ""
+
+
 def call_needs_confirmation(payload: dict[str, Any]) -> bool:
+    if browser_use_permission_kind(payload):
+        return True
     name = str(payload.get("name", ""))
     if name in {"request_permissions", "request_user_input"}:
         return True
