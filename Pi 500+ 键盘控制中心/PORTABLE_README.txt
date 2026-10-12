@@ -37,7 +37,7 @@ settings.json，并把旧服务和设置备份到：
 
 - PyQt5 编写的圆角桌面控制中心和系统托盘。
 - Pi 500+ RGB 键盘状态灯及动态彩虹灯效。
-- Pi 500+ 蓝牙 LE 键盘后台、配对、键盘模式和 Windows Win+L。
+- Pi 500+ 蓝牙 LE 键盘后台、配对、键盘模式、可选非彩虹灯效和 Windows Win+L。
 - Waveshare LCD HAT 的 Codex 用量、IP、TUN 公网出口 IP 与按键功能。
 - AOC 显示器 DDC/CI 信号源与亮度控制。
 - Codex 及浏览器上传权限确认提示，以及 Key1 单按确认、双按拒绝。

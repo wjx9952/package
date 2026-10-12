@@ -66,6 +66,20 @@ class QtRegressionTests(unittest.TestCase):
             self.assertIn(IDLE_EFFECTS[key][2], label)
         self.assertFalse(CodexRGBApp.valid_state_color("idle", "cycle_left_right"))
 
+    def test_keyboard_mode_accepts_every_idle_effect(self):
+        app = CodexRGBApp.__new__(CodexRGBApp)
+        for key, (expected_effect, _speed, name, _description) in IDLE_EFFECTS.items():
+            self.assertTrue(CodexRGBApp.valid_state_color("keyboard_mode", key))
+            app.state_colors = {"keyboard_mode": key}
+            effect, _hue, _sat, _speed, label, _color = app.lighting_for(
+                "keyboard_mode"
+            )
+            self.assertEqual(effect, expected_effect)
+            self.assertIn(name, label)
+        self.assertFalse(
+            CodexRGBApp.valid_state_color("keyboard_mode", "cycle_left_right")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

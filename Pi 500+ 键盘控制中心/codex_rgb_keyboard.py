@@ -775,7 +775,7 @@ class CodexRGBApp:
         ).pack(side="left")
         self.bt_lighting_button = tk.Button(
             lighting_row,
-            command=self.choose_keyboard_mode_color,
+            command=self.choose_keyboard_mode_effect,
             relief="flat",
             padx=10,
             pady=5,
@@ -1712,7 +1712,7 @@ class CodexRGBApp:
         return (
             state == "processing" and value in PROCESSING_EFFECTS
         ) or (
-            state == "idle" and value in IDLE_EFFECTS
+            state in {"idle", "keyboard_mode"} and value in IDLE_EFFECTS
         ) or cls.valid_color(value)
 
     def save_settings(self) -> None:
@@ -1754,19 +1754,8 @@ class CodexRGBApp:
         if state in {"completed", "idle"}:
             self.detail.set(self.completion_lighting_detail())
 
-    def choose_keyboard_mode_color(self) -> None:
-        selected = ask_rgb_color(
-            self.root,
-            self.state_colors["keyboard_mode"],
-            title="选择键盘模式灯光颜色",
-        )
-        if not selected:
-            return
-        self.state_colors["keyboard_mode"] = selected.lower()
-        self.update_color_button("keyboard_mode")
-        self.save_settings()
-        if self.keyboard_mode_lighting_should_apply():
-            self.activate_keyboard_mode_lighting()
+    def choose_keyboard_mode_effect(self) -> None:
+        self.choose_idle_effect("keyboard_mode")
 
     def keyboard_mode_brightness_changed(self, value: str) -> None:
         self.state_brightness["keyboard_mode"] = int(float(value))
@@ -1820,14 +1809,14 @@ class CodexRGBApp:
         try:
             if not self.keyboard_mode_lighting_should_apply():
                 return
-            hue, saturation = self.color_to_hs(
-                self.state_colors["keyboard_mode"]
+            effect, hue, saturation, speed, _label, _colour = self.lighting_for(
+                "keyboard_mode"
             )
             self.apply_effect(
-                2,
+                effect,
                 hue,
                 saturation,
-                128,
+                speed,
                 self.state_brightness["keyboard_mode"],
                 require_bt_active=True,
             )
@@ -2061,9 +2050,11 @@ class CodexRGBApp:
             self.current_state = ""
             self.root.after(0, self.refresh)
 
-    def choose_idle_effect(self) -> None:
+    def choose_idle_effect(self, state: str = "idle") -> None:
+        is_keyboard_mode = state == "keyboard_mode"
+        state_title = "键盘模式" if is_keyboard_mode else "Codex 空闲状态"
         dialog = tk.Toplevel(self.root)
-        dialog.title("空闲灯效")
+        dialog.title("键盘模式灯效" if is_keyboard_mode else "空闲灯效")
         dialog.configure(bg=WINDOW_BG)
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -2080,7 +2071,7 @@ class CodexRGBApp:
         card.pack(padx=14, pady=14)
         tk.Label(
             card,
-            text="Codex 空闲状态灯效",
+            text=state_title + "灯效",
             bg=CARD_BG,
             fg=TEXT,
             font=(UI_FONT, 14, "bold"),
@@ -2093,7 +2084,7 @@ class CodexRGBApp:
             font=(UI_FONT, 9),
         ).pack(anchor="w", pady=(2, 10))
 
-        current = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
+        current = self.state_colors.get(state, DEFAULT_STATE_COLORS[state])
         selected_effect = tk.StringVar(
             value=current if current in IDLE_EFFECTS else ""
         )
@@ -2123,7 +2114,7 @@ class CodexRGBApp:
                 value=key,
                 command=lambda key=key, name=name, detail=detail: (
                     description.set(detail),
-                    self.preview_idle_effect(key, name),
+                    self.preview_idle_effect(key, name, state),
                 ),
                 indicatoron=False,
                 selectcolor="#dbeafe",
@@ -2168,7 +2159,9 @@ class CodexRGBApp:
         tk.Button(
             actions,
             text="应用所选灯效",
-            command=lambda: self.set_idle_effect(selected_effect.get(), dialog),
+            command=lambda: self.set_idle_effect(
+                selected_effect.get(), dialog, state
+            ),
             bg=APPLE_BLUE,
             fg="white",
             activebackground=APPLE_BLUE_ACTIVE,
@@ -2180,7 +2173,7 @@ class CodexRGBApp:
         tk.Button(
             actions,
             text="选择纯色…",
-            command=lambda: self.choose_idle_solid(dialog),
+            command=lambda: self.choose_idle_solid(dialog, state),
             bg=SUBTLE_BG,
             fg=TEXT,
             activebackground="#e8e8ed",
@@ -2200,16 +2193,22 @@ class CodexRGBApp:
         ) // 2
         dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
 
-    def choose_idle_solid(self, dialog: tk.Toplevel) -> None:
+    def choose_idle_solid(
+        self, dialog: tk.Toplevel, state: str = "idle"
+    ) -> None:
         self.cancel_idle_preview(dialog)
-        current = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
-        initial = current if self.valid_color(current) else DEFAULT_STATE_COLORS["idle"]
-        selected = ask_rgb_color(self.root, initial, title="选择空闲纯色")
+        current = self.state_colors.get(state, DEFAULT_STATE_COLORS[state])
+        initial = current if self.valid_color(current) else DEFAULT_STATE_COLORS[state]
+        title = "选择键盘模式纯色" if state == "keyboard_mode" else "选择空闲纯色"
+        selected = ask_rgb_color(self.root, initial, title=title)
         if selected:
-            self.set_idle_effect(selected.lower())
+            self.set_idle_effect(selected.lower(), state=state)
 
     def set_idle_effect(
-        self, value: str, dialog: tk.Toplevel | None = None
+        self,
+        value: str,
+        dialog: tk.Toplevel | None = None,
+        state: str = "idle",
     ) -> None:
         if value not in IDLE_EFFECTS and not self.valid_color(value):
             if self.idle_preview_message is not None:
@@ -2221,14 +2220,19 @@ class CodexRGBApp:
         if dialog is not None:
             dialog.grab_release()
             dialog.destroy()
-        self.state_colors["idle"] = value
-        self.update_color_button("idle")
+        self.state_colors[state] = value
+        self.update_color_button(state)
         self.save_settings()
         self.current_state = ""
-        self.detail.set(self.completion_lighting_detail())
-        self.root.after(0, self.refresh)
+        if state == "keyboard_mode" and self.keyboard_mode_lighting_should_apply():
+            self.activate_keyboard_mode_lighting()
+        else:
+            self.detail.set(self.completion_lighting_detail())
+            self.root.after(0, self.refresh)
 
-    def preview_idle_effect(self, key: str, name: str) -> None:
+    def preview_idle_effect(
+        self, key: str, name: str, state: str = "idle"
+    ) -> None:
         if key not in IDLE_EFFECTS:
             return
         self.preview_generation += 1
@@ -2238,20 +2242,22 @@ class CodexRGBApp:
             self.idle_preview_message.set(f"正在预览：{name}（5 秒）")
         threading.Thread(
             target=self.idle_preview_worker,
-            args=(key, token),
+            args=(key, token, state),
             daemon=True,
         ).start()
 
-    def idle_preview_worker(self, key: str, token: int) -> None:
+    def idle_preview_worker(
+        self, key: str, token: int, state: str = "idle"
+    ) -> None:
         try:
             effect, speed, _name, _description = IDLE_EFFECTS[key]
-            _default_effect, hue, _default_speed, _label, _color = LIGHTING["idle"]
+            hue, _saturation = self.color_to_hs(DEFAULT_STATE_COLORS[state])
             applied = self.apply_effect(
                 effect,
                 hue,
                 255,
                 speed,
-                self.state_brightness["idle"],
+                self.state_brightness[state],
                 preview_token=token,
             )
             if not applied:
@@ -2403,8 +2409,19 @@ class CodexRGBApp:
 
     def lighting_for(self, state: str) -> tuple[int, int, int, int, str, str]:
         if state == "keyboard_mode":
-            color = self.state_colors["keyboard_mode"]
+            selected = self.state_colors["keyboard_mode"]
+            color = (
+                selected
+                if self.valid_color(selected)
+                else DEFAULT_STATE_COLORS["keyboard_mode"]
+            )
             hue, saturation = self.color_to_hs(color)
+            if selected in IDLE_EFFECTS:
+                effect, speed, effect_name, _description = IDLE_EFFECTS[selected]
+                return (
+                    effect, hue, 255, speed,
+                    f"键盘模式 · {effect_name}", color,
+                )
             return 2, hue, saturation, 128, "键盘模式", color
         effect, hue, speed, label, color = LIGHTING[state]
         saturation = 255
