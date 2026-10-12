@@ -46,12 +46,14 @@ Windows Caps Lock 开启会让物理 Caps Lock 键稍亮；Codex 处理、确认
 帧，再执行 Display Off 和 Sleep In，最后才释放背光、SPI 与 GPIO。
 状态颜色按钮和选择窗口会显示各灯效对应的图案或纯色色块。
 
-LCD HAT 倒置安装后，KEY1 可随时开启或关闭蓝牙键盘模式。
-持续按住 KEY1 满 2 秒会打开 Pi 500+ 键盘控制中心；若窗口已经打开，则将它置于最前面。
-Codex 等待确认时，小屏幕会自动显示请求类型和具体原因；KEY3 用于后台确认该请求，
+LCD HAT 倒置安装后，Key3 可随时开启或关闭蓝牙键盘模式。
+持续按住 Key3 满 2 秒会打开 Pi 500+ 键盘控制中心；若窗口已经打开，则将它置于最前面。
+Codex 等待确认时，小屏幕会自动显示请求类型和具体原因；Key1 单按一次用于后台确认，
+在 0.4 秒内连续按两次用于后台拒绝。为识别双按，单按确认会等待约 0.4 秒再执行。
 确认检测兼容 JavaScript 和 JSON 两种参数格式，包括带引号的 `"sandbox_permissions"` 字段。
-按下 KEY3 后小屏幕会立即显示 `Confirming...`，确认完成后再显示 `Confirmed` 或失败提示。
-长按 KEY3 满 2 秒会打开或置顶 ChatGPT。确认完成后自动返回 Codex Usage 页面。倒置后的摇杆上下仍以 5% 调整 AOC 亮度。窗口中的
+执行后小屏幕会显示 `Confirming...` / `Rejecting...`，完成后显示 `Confirmed` / `Rejected`
+或相应的失败提示。确认页面底部也会提示“Key1 单按确认 / 双按拒绝”。
+长按 Key1 满 2 秒会打开或置顶 ChatGPT。确认完成后自动返回 Codex Usage 页面。倒置后的摇杆上下仍以 5% 调整 AOC 亮度。窗口中的
 “切换信号源”和“亮度 ±5%”按钮可执行相同操作。
 倒置后的摇杆向左直接选择 DisplayPort，并在键盘模式尚未开启时自动开启；向右直接
 选择 HDMI，并在键盘模式尚未关闭时自动关闭。键盘模式已经处于目标状态时不会重复操作。
@@ -59,9 +61,9 @@ Codex 等待确认时，小屏幕会自动显示请求类型和具体原因；KE
 再单独显示 `Keyboard / ON` 或 `Keyboard / OFF`，不再用加号合并为一页。
 摇杆上下调节 AOC 亮度时，小屏幕先显示 Adjusting / Brightness；松开摇杆后
 显示 Adjusted / Brightness XX%，展示最终实际亮度，然后返回 Codex Usage。
-KEY2 用于切换 Clash Verge 的虚拟网卡（TUN）模式，小屏幕会短暂显示 TUN ON 或
+Key2 用于切换 Clash Verge 的虚拟网卡（TUN）模式，小屏幕会短暂显示 TUN ON 或
 TUN OFF；TUN IP 显示当前 TUN 流量的公网出口 IPv4，不显示 Mihomo 内部的
-198.18.x.x 地址。长按 KEY2 满 2 秒会打开或置顶 Clash Verge。向下按压摇杆中键会向已连接的 Windows 发送 Win+L，并同时显示树莓派的
+198.18.x.x 地址。长按 Key2 满 2 秒会打开或置顶 Clash Verge。向下按压摇杆中键会向已连接的 Windows 发送 Win+L，并同时显示树莓派的
 Ctrl+Alt+L 锁屏界面。使用摇杆中键锁屏无需安装额外
 软件，且不要求先开启蓝牙键盘模式。持续按住摇杆中键满 5 秒则不会执行短按锁屏，
 而是免密码运行 `sudo systemctl restart display-manager`；该长按在锁屏状态下仍然有效。

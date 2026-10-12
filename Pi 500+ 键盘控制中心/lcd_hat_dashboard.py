@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Codex quota dashboard for the Waveshare 1.3inch LCD HAT.
 
-KEY1 (BCM GPIO 21) toggles Bluetooth keyboard mode.
-KEY2 (BCM GPIO 20) toggles Clash Verge virtual NIC (TUN) mode.
-KEY3 (BCM GPIO 16) confirms a pending Codex request.
+With the HAT mounted upside down, user-facing Key3 (BCM GPIO 21) toggles
+Bluetooth keyboard mode, Key2 (BCM GPIO 20) toggles Clash Verge virtual NIC
+(TUN) mode, and Key1 (BCM GPIO 16) confirms a pending Codex request with one
+tap and rejects it
+with two quick taps.
 Joystick press (BCM GPIO 13) locks the Raspberry Pi and Windows; holding it
 for five seconds restarts the display manager.
 """
@@ -85,10 +87,11 @@ KEY1_COOLDOWN_SECONDS = 0.6
 LOCK_COOLDOWN_SECONDS = 0.6
 TUN_TOGGLE_COOLDOWN_SECONDS = 0.6
 KEY3_COOLDOWN_SECONDS = 0.6
+KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-09-key3-confirming-feedback"
+LCD_BUILD_ID = "2026-10-12-key3-double-press-reject"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -106,10 +109,46 @@ CODEX_APPROVE_LABELS = {
     "核准",
     "核准一次",
 }
+CODEX_REJECT_LABELS = {
+    "deny",
+    "deny once",
+    "reject",
+    "decline",
+    "don't allow",
+    "do not allow",
+    "拒绝",
+    "拒絕",
+    "不允许",
+    "不允許",
+}
 
 FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+
+class Key1DecisionTracker:
+    """Turn one user-facing Key1 tap into confirm and two taps into reject."""
+
+    def __init__(self, window: float = KEY3_DOUBLE_PRESS_SECONDS) -> None:
+        self.window = window
+        self.pending_at: float | None = None
+
+    def tap(self, pressed_at: float) -> str | None:
+        if (
+            self.pending_at is not None
+            and pressed_at - self.pending_at <= self.window
+        ):
+            self.pending_at = None
+            return "reject"
+        self.pending_at = pressed_at
+        return None
+
+    def poll(self, now: float) -> str | None:
+        if self.pending_at is None or now - self.pending_at < self.window:
+            return None
+        self.pending_at = None
+        return "confirm"
 
 
 def font(size: int, *, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
@@ -813,8 +852,8 @@ def normalized_accessible_label(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def click_codex_approve_button() -> bool:
-    """Click the visible one-time approval button through AT-SPI.
+def click_codex_decision_button(labels: set[str]) -> bool:
+    """Click a visible Codex decision button through AT-SPI.
 
     This function is run in a child process because a broken accessibility
     bus can abort a GI process instead of raising a normal Python exception.
@@ -824,7 +863,7 @@ def click_codex_approve_button() -> bool:
     gi.require_version("Atspi", "2.0")
     from gi.repository import Atspi
 
-    wanted = {normalized_accessible_label(label) for label in CODEX_APPROVE_LABELS}
+    wanted = {normalized_accessible_label(label) for label in labels}
     deadline = time.monotonic() + 2.5
     while time.monotonic() < deadline:
         desktop = Atspi.get_desktop(0)
@@ -868,11 +907,35 @@ def click_codex_approve_button() -> bool:
     return False
 
 
+def click_codex_approve_button() -> bool:
+    return click_codex_decision_button(CODEX_APPROVE_LABELS)
+
+
+def click_codex_reject_button() -> bool:
+    return click_codex_decision_button(CODEX_REJECT_LABELS)
+
+
 def try_accessible_codex_approve() -> bool:
     """Run the AT-SPI click helper without risking the LCD service process."""
     try:
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--click-codex-approve"],
+            env=desktop_environment(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def try_accessible_codex_reject() -> bool:
+    """Run the AT-SPI reject helper without risking the LCD service process."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--click-codex-reject"],
             env=desktop_environment(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -918,7 +981,7 @@ def confirm_codex_request(payload: dict) -> str:
             time.sleep(FOCUS_SETTLE_SECONDS)
 
         # Enter is Codex's global approval shortcut and succeeds quickly in
-        # the normal case. Do not make every KEY3 press wait for the slower
+        # the normal case. Do not make every Key1 press wait for the slower
         # accessibility scan; use that only when the first Enter was swallowed
         # by a focused sidebar button, link, menu or dialog.
         result = run_desktop_command([str(WTYPE_PATH), "-k", "Return"])
@@ -952,6 +1015,79 @@ def confirm_codex_request(payload: dict) -> str:
             time.sleep(0.1)
         raise RuntimeError(
             f"Codex prompt did not accept the confirmation via {method}"
+        )
+    finally:
+        if not was_focused:
+            time.sleep(FOCUS_SETTLE_SECONDS)
+            run_desktop_command(
+                [str(WTYPE_PATH), "-M", "alt", "-k", "Tab", "-m", "alt"]
+            )
+
+
+def reject_codex_request(payload: dict) -> str:
+    """Open the exact pending task, reject it, then restore the prior app."""
+    if not WTYPE_PATH.is_file() or not WLRCTL_PATH.is_file():
+        raise RuntimeError("Wayland helpers are not installed")
+
+    was_focused = run_desktop_command(
+        [str(WLRCTL_PATH), "toplevel", "find", CODEX_WINDOW_MATCH, "state:active"]
+    ).returncode == 0
+    method = ""
+    try:
+        session_id = str(payload.get("_codex_session_id", ""))
+        if session_id:
+            opened = run_desktop_command(
+                [
+                    executable_path("chatgpt", "/usr/bin/chatgpt"),
+                    f"codex://threads/{session_id}",
+                ]
+            )
+            if opened.returncode != 0:
+                raise RuntimeError("could not open the pending Codex task")
+            time.sleep(CODEX_THREAD_SETTLE_SECONDS)
+
+        codex_is_active = run_desktop_command(
+            [str(WLRCTL_PATH), "toplevel", "find", CODEX_WINDOW_MATCH, "state:active"]
+        ).returncode == 0
+        if not codex_is_active:
+            focused = run_desktop_command(
+                [str(WLRCTL_PATH), "toplevel", "focus", CODEX_WINDOW_MATCH]
+            )
+            if focused.returncode != 0:
+                raise RuntimeError("Codex window not found")
+            time.sleep(FOCUS_SETTLE_SECONDS)
+
+        # Escape is Codex's native refusal shortcut. If focus swallowed it,
+        # click a visible deny/reject button through AT-SPI and retry Escape once.
+        result = run_desktop_command([str(WTYPE_PATH), "-k", "Escape"])
+        if result.returncode != 0:
+            raise RuntimeError("could not send Codex rejection key")
+        method = "keyboard"
+        fast_deadline = time.monotonic() + CONFIRMATION_FAST_TIMEOUT_SECONDS
+        while time.monotonic() < fast_deadline:
+            if not codex_call_still_pending(payload):
+                return method
+            time.sleep(0.05)
+
+        if try_accessible_codex_reject():
+            method = "accessibility-fallback"
+        else:
+            run_desktop_command(
+                [str(WLRCTL_PATH), "toplevel", "focus", CODEX_WINDOW_MATCH]
+            )
+            time.sleep(FOCUS_SETTLE_SECONDS)
+            result = run_desktop_command([str(WTYPE_PATH), "-k", "Escape"])
+            if result.returncode != 0:
+                raise RuntimeError("could not retry Codex rejection key")
+            method = "keyboard-retry"
+
+        deadline = time.monotonic() + CONFIRMATION_RESULT_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if not codex_call_still_pending(payload):
+                return method
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"Codex prompt did not accept the rejection via {method}"
         )
     finally:
         if not was_focused:
@@ -1409,7 +1545,7 @@ def render_confirmation(payload: dict) -> Image.Image:
         y += 23
 
     draw.rounded_rectangle((20, 196, 220, 220), radius=12, fill=(78, 48, 8))
-    footer = "按 KEY3 确认"
+    footer = "Key1 单按确认 / 双按拒绝"
     footer_box = draw.textbbox((0, 0), footer, font=F_CONFIRM_FOOTER)
     draw.text(
         ((WIDTH - (footer_box[2] - footer_box[0])) // 2, 198), footer,
@@ -1559,8 +1695,9 @@ def run(
     from gpiozero import Button
 
     display = ST7789()
-    # The HAT is mounted upside down: physical KEY1/2/3 map to the former
-    # KEY3/2/1 functions. A smaller hardware debounce
+    # The HAT is mounted upside down: user-facing Key3/2/1 correspond to the
+    # board's KEY1/2/3 GPIO inputs. Keep the electrical object names unchanged.
+    # A smaller hardware debounce
     # catches quick taps; the explicit cooldown below prevents double toggles.
     key1 = Button(KEY1_PIN, pull_up=True, bounce_time=0.05)
     key2 = Button(KEY2_PIN, pull_up=True, bounce_time=0.05)
@@ -1570,7 +1707,6 @@ def run(
     joystick_left = Button(JOYSTICK_LEFT_PIN, pull_up=True, bounce_time=0.05)
     joystick_right = Button(JOYSTICK_RIGHT_PIN, pull_up=True, bounce_time=0.05)
     joystick_press = Button(JOYSTICK_PRESS_PIN, pull_up=True, bounce_time=0.05)
-    confirm_pressed = threading.Event()
     lock_pressed = threading.Event()
     tun_toggle_pressed = threading.Event()
     keyboard_toggle_pressed = threading.Event()
@@ -1633,7 +1769,8 @@ def run(
     brightness_held = {1: False, -1: False}
     brightness_repeat_at = {1: 0.0, -1: 0.0}
     brightness_last_value: dict[int, int | None] = {1: None, -1: None}
-    last_confirm_at = -KEY3_COOLDOWN_SECONDS
+    last_key3_action_at = -KEY3_COOLDOWN_SECONDS
+    key3_decisions = Key1DecisionTracker()
     last_lock_at = -LOCK_COOLDOWN_SECONDS
     last_tun_toggle_at = -TUN_TOGGLE_COOLDOWN_SECONDS
     last_keyboard_toggle_at = -KEY3_COOLDOWN_SECONDS
@@ -1666,7 +1803,7 @@ def run(
             "button": key3,
             "started": None,
             "fired": False,
-            "short_event": confirm_pressed,
+            "short_event": None,
             "title": "ChatGPT",
             "match": CODEX_WINDOW_MATCH,
             "command": [executable_path("chatgpt", "/usr/bin/chatgpt")],
@@ -1674,8 +1811,9 @@ def run(
     ]
     # Capture GPIO edges in gpiozero's callback threads. Polling button levels
     # from the main rendering loop can miss a quick tap while SPI or a desktop
-    # command is busy, which was especially visible on KEY3.
+    # command is busy, which was especially visible on user-facing Key1.
     key_edge_events: queue.SimpleQueue[tuple[int, bool, float]] = queue.SimpleQueue()
+    key3_tap_events: queue.SimpleQueue[float] = queue.SimpleQueue()
     for key_index, key_state in enumerate(key_hold_states):
         button = key_state["button"]
         button.when_pressed = (
@@ -1968,13 +2106,16 @@ def run(
                         key_state["fired"] = False
                     elif key_state["started"] is not None:
                         if not key_state["fired"]:
-                            key_state["short_event"].set()
+                            if key_index == 2:
+                                key3_tap_events.put(edge_at)
+                            else:
+                                key_state["short_event"].set()
                         key_state["started"] = None
                         key_state["fired"] = False
             except queue.Empty:
                 pass
 
-            # KEY1/2/3 keep their original short-press actions, but only fire
+            # The three side keys keep their short-press actions, but only fire
             # those actions after release. Holding for two seconds opens or
             # focuses the matching desktop application instead.
             for key_state in key_hold_states:
@@ -2046,19 +2187,48 @@ def run(
                 joystick_press_started_at = None
                 joystick_restart_fired = False
 
-            if confirm_pressed.is_set():
-                confirm_pressed.clear()
+            key3_action: str | None = None
+            try:
+                while True:
+                    tap_at = key3_tap_events.get_nowait()
+                    if tap_at - last_key3_action_at < KEY3_COOLDOWN_SECONDS:
+                        continue
+                    decision = key3_decisions.tap(tap_at)
+                    if decision == "reject":
+                        key3_action = decision
+            except queue.Empty:
+                pass
+            if key3_action == "reject":
+                # Ignore any accidental third edge from the same rapid gesture.
+                key3_decisions.pending_at = None
+            if key3_action is None:
+                key3_action = key3_decisions.poll(now)
+
+            if key3_action is not None:
                 runtime_status["last_key3_event"] = (
                     datetime.now().astimezone().isoformat(timespec="seconds")
                 )
-                if now - last_confirm_at >= KEY3_COOLDOWN_SECONDS:
-                    last_confirm_at = now
+                if now - last_key3_action_at >= KEY3_COOLDOWN_SECONDS:
+                    last_key3_action_at = now
                     try:
                         confirmation = pending_codex_confirmation()
                         if confirmation is None:
                             overlay = render_action("Codex", "No Prompt", failed=True)
                             runtime_status["last_key3_result"] = "no_prompt"
                             runtime_status["last_key3_error"] = ""
+                        elif key3_action == "reject":
+                            display.show(render_action("Codex", "Rejecting..."))
+                            runtime_status["last_key3_result"] = "rejecting"
+                            runtime_status["last_key3_error"] = ""
+                            write_runtime_status(runtime_status)
+                            reject_method = reject_codex_request(confirmation)
+                            overlay = render_action("Codex", "Rejected")
+                            runtime_status["last_key3_result"] = "rejected"
+                            runtime_status["last_key3_method"] = reject_method
+                            runtime_status["last_key3_error"] = ""
+                            confirmation = None
+                            confirmation_signature = ""
+                            next_confirmation_check = time.monotonic() + 0.5
                         else:
                             # Confirmation can take several seconds when the
                             # first Enter is swallowed and the accessibility
@@ -2077,7 +2247,12 @@ def run(
                             confirmation_signature = ""
                             next_confirmation_check = time.monotonic() + 0.5
                     except Exception as exc:
-                        overlay = render_action("Codex", "Confirm Failed", failed=True)
+                        action_name = (
+                            "Reject Failed"
+                            if key3_action == "reject"
+                            else "Confirm Failed"
+                        )
+                        overlay = render_action("Codex", action_name, failed=True)
                         runtime_status["last_key3_result"] = "failed"
                         runtime_status["last_key3_error"] = repr(exc)
                     overlay_until = time.monotonic() + 2.0
@@ -2341,9 +2516,12 @@ def main() -> None:
     )
     parser.add_argument("--preview", type=Path, help="render a PNG without touching GPIO/SPI")
     parser.add_argument("--click-codex-approve", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--click-codex-reject", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.click_codex_approve:
         raise SystemExit(0 if click_codex_approve_button() else 1)
+    if args.click_codex_reject:
+        raise SystemExit(0 if click_codex_reject_button() else 1)
     if args.preview:
         try:
             data = get_json(args.quota_url)
