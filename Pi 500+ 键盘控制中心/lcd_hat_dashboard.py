@@ -101,7 +101,7 @@ KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-bambu-status-carousel"
+LCD_BUILD_ID = "2026-10-12-physical-key1-launch-fix"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -795,6 +795,9 @@ def desktop_environment() -> dict[str, str]:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     environment = os.environ.copy()
     environment["XDG_RUNTIME_DIR"] = runtime_dir
+    environment.setdefault(
+        "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
+    )
     if not environment.get("WAYLAND_DISPLAY"):
         sockets = sorted(
             path.name for path in Path(runtime_dir).glob("wayland-*")
@@ -846,7 +849,24 @@ def launch_desktop_app(command: list[str]) -> None:
         timeout=3,
         check=False,
     )
-    if result.returncode != 0:
+    if result.returncode == 0:
+        return
+
+    # Some user-service environments can reach Wayland but do not allow a
+    # nested `systemd-run --user` call. Launch independently as a fallback so
+    # a physical side-key hold still opens the requested application.
+    try:
+        process = subprocess.Popen(
+            command,
+            env=environment,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RuntimeError("desktop application launch failed") from exc
+    time.sleep(0.15)
+    if process.poll() not in (None, 0):
         raise RuntimeError("desktop application launch failed")
 
 
@@ -2099,6 +2119,7 @@ def run(
     key_hold_states = [
         {
             "button": key1,
+            "physical_name": "Key1",
             "started": None,
             "fired": False,
             "short_event": keyboard_toggle_pressed,
@@ -2108,6 +2129,7 @@ def run(
         },
         {
             "button": key2,
+            "physical_name": "Key2",
             "started": None,
             "fired": False,
             "short_event": tun_toggle_pressed,
@@ -2122,6 +2144,7 @@ def run(
         },
         {
             "button": key3,
+            "physical_name": "Key3",
             "started": None,
             "fired": False,
             "short_event": None,
@@ -2165,6 +2188,9 @@ def run(
         "last_confirmation_error": "",
         "last_key3_event": "",
         "last_key3_result": "",
+        "last_side_key_hold": "",
+        "last_side_key_hold_result": "",
+        "last_side_key_hold_error": "",
     }
     next_runtime_status_write = 0.0
     write_runtime_status(runtime_status)
@@ -2489,16 +2515,24 @@ def run(
                 ):
                     key_state["fired"] = True
                     title = str(key_state["title"])
+                    runtime_status["last_side_key_hold"] = (
+                        str(key_state["physical_name"])
+                    )
                     try:
                         result = focus_or_launch_window(
                             str(key_state["match"]),
                             list(key_state["command"]),
                         )
                         overlay = render_action(title, result)
-                    except Exception:
+                        runtime_status["last_side_key_hold_result"] = result.lower()
+                        runtime_status["last_side_key_hold_error"] = ""
+                    except Exception as exc:
                         overlay = render_action(
                             title, "Open Failed", failed=True
                         )
+                        runtime_status["last_side_key_hold_result"] = "failed"
+                        runtime_status["last_side_key_hold_error"] = repr(exc)
+                    write_runtime_status(runtime_status)
                     overlay_until = time.monotonic() + 2.0
                     dirty = True
 
