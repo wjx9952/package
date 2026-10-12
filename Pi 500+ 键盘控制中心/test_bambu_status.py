@@ -10,6 +10,7 @@ import lcd_hat_dashboard as dashboard
 def sample_payload(state: str = "RUNNING") -> dict:
     return {
         "connected": True,
+        "printer_ip": "192.168.1.88",
         "updated_at": 1_000.0,
         "status_changed_at": 995.0,
         "print": {
@@ -43,12 +44,23 @@ class BambuStatusTests(unittest.TestCase):
         self.assertIsNotNone(status)
         self.assertEqual(status["status"], "PRINTING")
         self.assertEqual(status["status_colour"], (255, 149, 0))
+        self.assertEqual(status["printer_ip"], "192.168.1.88")
         self.assertEqual(status["job_name"], "H2D Monitor Case")
         self.assertEqual(status["percent"], 63)
         self.assertEqual((status["layer"], status["total_layers"]), (128, 204))
         self.assertEqual(status["material"], "PLA")
         self.assertEqual(status["colour_name"], "Gray")
         self.assertEqual(status["filament_colour"], (95, 99, 103))
+
+    def test_job_name_preserves_real_filename_and_cjk(self) -> None:
+        payload = sample_payload()
+        payload["print"]["subtask_name"] = "理线神器 数据线收纳.3mf"
+        status = dashboard.bambu_status_from_payload(payload, now=1_001.0)
+        self.assertEqual(status["job_name"], "理线神器 数据线收纳.3mf")
+
+    def test_remaining_time_uses_compact_english_label(self) -> None:
+        self.assertEqual(dashboard._bambu_remaining_text(102), "1h 42m left")
+        self.assertEqual(dashboard._bambu_remaining_text(8), "8m left")
 
     def test_state_colours_match_the_confirmed_design(self) -> None:
         for raw, label, colour in (

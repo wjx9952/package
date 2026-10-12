@@ -82,6 +82,7 @@ class BambuMonitor:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "connected": self.connected,
+            "printer_ip": self.host,
             "updated_at": time.time(),
             "status_changed_at": self.status_changed_at,
             "print": self.raw_state.get("print", {}),

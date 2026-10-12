@@ -209,7 +209,6 @@ F_META = font(10)
 F_TIME = font(15, bold=True)
 F_CARD_LABEL = font(17, bold=True)
 F_RESET = font(11)
-F_BAMBU_JOB = font(14, bold=True)
 F_BAMBU_VALUE = font(15, bold=True)
 
 
@@ -227,6 +226,7 @@ def cjk_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
 F_CONFIRM_TITLE = cjk_font(22, bold=True)
 F_CONFIRM_BODY = cjk_font(15)
 F_CONFIRM_FOOTER = cjk_font(13, bold=True)
+F_BAMBU_JOB = cjk_font(14, bold=True)
 
 
 def get_json(url: str) -> dict:
@@ -1277,12 +1277,21 @@ def _bounded_percent(value: object) -> int:
     return max(0, min(100, round(_number(value))))
 
 
-def _ascii_job_name(value: object) -> str:
-    """Keep user-provided names renderable by the LCD's compact Latin font."""
+def _bambu_job_name(value: object) -> str:
+    """Return the printer's task/file name while keeping paths compact."""
     text = re.sub(r"\s+", " ", str(value or "")).strip()
-    text = "".join(character for character in text if character.isascii())
-    text = text.strip(" _-/")
+    if "/" in text or "\\" in text:
+        text = re.split(r"[/\\]", text)[-1]
+    text = text.strip(" _-/\\")
     return text or "Print Job"
+
+
+def _bambu_remaining_text(minutes: object) -> str:
+    total = max(0, round(_number(minutes)))
+    hours, minute = divmod(total, 60)
+    if hours:
+        return f"{hours}h {minute:02d}m left"
+    return f"{minute}m left"
 
 
 def _parse_filament_colour(value: object) -> tuple[int, int, int]:
@@ -1406,7 +1415,8 @@ def bambu_status_from_payload(
         "updated_at": updated_at,
         "status_changed_at": changed_at,
         "connected": connected,
-        "job_name": _ascii_job_name(
+        "printer_ip": str(payload.get("printer_ip") or "--").strip() or "--",
+        "job_name": _bambu_job_name(
             print_data.get("subtask_name") or print_data.get("gcode_file")
         ),
         "percent": _bounded_percent(
@@ -1694,26 +1704,37 @@ def render_bambu_status(status: dict) -> Image.Image:
     title_width = draw.textlength(title, font=F_TITLE)
     draw.text(((WIDTH - title_width) // 2, 2), title, font=F_TITLE, fill=(250, 250, 252))
 
-    status_colour = tuple(status.get("status_colour", (255, 149, 0)))
-    draw_status_dot(image, (10, 32, 18, 40), status_colour)
-    draw.text((23, 30), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
+    connection_colour = (48, 209, 88) if status.get("connected", False) else (255, 69, 58)
+    draw_status_dot(image, (10, 32, 18, 40), connection_colour)
+    draw.text((23, 30), str(status.get("printer_ip", "--")), font=F_META, fill=(250, 250, 252))
 
-    filament_colour = tuple(status.get("filament_colour", (32, 129, 238)))
-    draw_status_dot(image, (10, 46, 18, 54), filament_colour)
-    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
-    draw.text((23, 44), material, font=F_META, fill=(250, 250, 252))
+    status_colour = tuple(status.get("status_colour", (255, 149, 0)))
+    draw_status_dot(image, (10, 46, 18, 54), status_colour)
+    draw.text((23, 44), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
+
+    # File, progress, material, layer and finish time form one Codex-style card.
+    draw.rounded_rectangle(
+        (7, 60, 233, 181),
+        radius=15,
+        fill=(10, 15, 21),
+        outline=(39, 49, 63),
+        width=1,
+    )
 
     job_name = _fit_lcd_text(
         draw,
         str(status.get("job_name", "Print Job")),
         F_BAMBU_JOB,
-        WIDTH - 20,
+        WIDTH - 34,
     )
-    draw.text((10, 63), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
+    draw.text((17, 67), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
 
     percent = _bounded_percent(status.get("percent", 0))
-    draw.text((10, 79), f"{percent}%", font=F_PERCENT, fill=(43, 224, 235))
-    bar = (10, 113, 230, 121)
+    draw.text((17, 83), f"{percent}%", font=F_PERCENT, fill=(43, 224, 235))
+    remaining = _bambu_remaining_text(status.get("remaining_minutes", 0))
+    remaining_width = draw.textlength(remaining, font=F_TIME)
+    draw.text((223 - remaining_width, 95), remaining, font=F_TIME, fill=(248, 249, 252))
+    bar = (17, 117, 223, 125)
     draw.rounded_rectangle(bar, radius=4, fill=(42, 47, 58))
     if percent:
         fill_right = bar[0] + max(7, round((bar[2] - bar[0]) * percent / 100))
@@ -1724,42 +1745,39 @@ def render_bambu_status(status: dict) -> Image.Image:
             (37, 238, 216),
             4,
         )
+    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
+    draw.text((17, 132), material, font=F_SMALL, fill=(248, 249, 252))
     layer = int(status.get("layer", 0))
     total_layers = int(status.get("total_layers", 0))
     draw.text(
-        (10, 127),
+        (17, 147),
         f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
         font=F_SMALL,
         fill=(188, 196, 211),
     )
-
-    draw.line((10, 148, 230, 148), fill=(35, 41, 50), width=1)
-    draw_status_dot(image, (10, 158, 16, 164), (255, 105, 45))
-    draw.text((21, 154), "Nozzle", font=F_META, fill=(188, 196, 211))
     draw.text(
-        (10, 168),
+        (17, 162),
+        "Finish " + str(status.get("finish_time", "--:--")),
+        font=F_SMALL,
+        fill=(248, 249, 252),
+    )
+
+    draw_status_dot(image, (10, 191, 16, 197), (255, 105, 45))
+    draw.text((21, 187), "Nozzle", font=F_META, fill=(188, 196, 211))
+    draw.text(
+        (10, 201),
         f"{int(status.get('nozzle', 0))}° / {int(status.get('nozzle_target', 0))}°",
         font=F_BAMBU_VALUE,
         fill=(248, 249, 252),
     )
-    draw_status_dot(image, (126, 158, 132, 164), (255, 204, 0))
-    draw.text((137, 154), "Bed", font=F_META, fill=(188, 196, 211))
+    draw_status_dot(image, (126, 191, 132, 197), (255, 204, 0))
+    draw.text((137, 187), "Bed", font=F_META, fill=(188, 196, 211))
     draw.text(
-        (126, 168),
+        (126, 201),
         f"{int(status.get('bed', 0))}° / {int(status.get('bed_target', 0))}°",
         font=F_BAMBU_VALUE,
         fill=(248, 249, 252),
     )
-
-    draw.line((10, 193, 230, 193), fill=(35, 41, 50), width=1)
-    draw.text(
-        (10, 200),
-        "Finish " + str(status.get("finish_time", "--:--")),
-        font=F_TIME,
-        fill=(248, 249, 252),
-    )
-    draw.ellipse((108, 229, 114, 235), fill=(53, 59, 70))
-    draw.ellipse((124, 229, 130, 235), fill=(37, 222, 224))
     return image.rotate(90)
 
 
