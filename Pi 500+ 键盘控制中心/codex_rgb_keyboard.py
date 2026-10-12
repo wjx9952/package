@@ -80,6 +80,10 @@ DEFAULT_STATE_BRIGHTNESS = {
     "completed": 180,
     "waiting_confirmation": 180,
 }
+DEFAULT_EFFECT_COLORS = {
+    "keyboard_mode": DEFAULT_STATE_COLORS["keyboard_mode"],
+    "idle": DEFAULT_STATE_COLORS["idle"],
+}
 
 
 # Newer Codex builds wrap permission prompts inside an exec tool call. The
@@ -456,6 +460,19 @@ IDLE_EFFECTS = {
     "pixel_fractal": (44, 90, "像素分形", "像素光点形成不断变化的分形纹理"),
 }
 
+# These effects use the firmware's configured hue as a visible base colour.
+# The remaining effects deliberately generate their own rainbow/heat-map hues,
+# so showing a colour picker for them would imply control the firmware ignores.
+COLOR_ADJUSTABLE_IDLE_EFFECTS = set(IDLE_EFFECTS) - {
+    "jellybean_raindrops",
+    "hue_breathing",
+    "hue_pendulum",
+    "hue_wave",
+    "typing_heatmap",
+    "splash",
+    "multisplash",
+}
+
 
 class CodexRGBApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -497,9 +514,10 @@ class CodexRGBApp:
         self.lock_wake_until = 0.0
         self.monitor_busy = False
         self.brightness_poll_busy = False
-        state_brightness, state_colors = self.load_settings()
+        state_brightness, state_colors, state_effect_colors = self.load_settings()
         self.state_brightness = state_brightness
         self.state_colors = state_colors
+        self.state_effect_colors = state_effect_colors
         self.color_buttons: dict[str, tk.Button] = {}
         self.color_images: dict[str, tk.PhotoImage] = {}
         self.color_labels: dict[str, str] = {}
@@ -1668,7 +1686,9 @@ class CodexRGBApp:
         )
         scale.pack(side="left", fill="x", expand=True)
     @classmethod
-    def load_settings(cls) -> tuple[dict[str, int], dict[str, str]]:
+    def load_settings(
+        cls,
+    ) -> tuple[dict[str, int], dict[str, str], dict[str, str]]:
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             legacy_brightness = min(
@@ -1693,9 +1713,24 @@ class CodexRGBApp:
                 colors[state] = (
                     saved if cls.valid_state_color(state, saved) else default
                 )
-            return brightness, colors
+            saved_effect_colors = data.get("state_effect_colors", {})
+            effect_colors = {}
+            for state, default in DEFAULT_EFFECT_COLORS.items():
+                # Migration keeps a user's former solid colour as the initial
+                # dynamic-effect colour instead of silently replacing it.
+                legacy = colors.get(state, default)
+                fallback = legacy if cls.valid_color(legacy) else default
+                saved = str(saved_effect_colors.get(state, fallback)).lower()
+                effect_colors[state] = (
+                    saved if cls.valid_color(saved) else fallback
+                )
+            return brightness, colors, effect_colors
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return DEFAULT_STATE_BRIGHTNESS.copy(), DEFAULT_STATE_COLORS.copy()
+            return (
+                DEFAULT_STATE_BRIGHTNESS.copy(),
+                DEFAULT_STATE_COLORS.copy(),
+                DEFAULT_EFFECT_COLORS.copy(),
+            )
 
     @staticmethod
     def valid_color(value: str) -> bool:
@@ -1719,6 +1754,7 @@ class CodexRGBApp:
         data = {
             "state_brightness": self.state_brightness,
             "state_colors": self.state_colors,
+            "state_effect_colors": self.state_effect_colors,
         }
         try:
             SETTINGS_FILE.write_text(
@@ -2085,9 +2121,13 @@ class CodexRGBApp:
         ).pack(anchor="w", pady=(2, 10))
 
         current = self.state_colors.get(state, DEFAULT_STATE_COLORS[state])
+        current_effect_color = self.state_effect_colors.get(
+            state, DEFAULT_EFFECT_COLORS[state]
+        )
         selected_effect = tk.StringVar(
             value=current if current in IDLE_EFFECTS else ""
         )
+        selected_effect_color = tk.StringVar(value=current_effect_color)
         description = tk.StringVar(
             value=(
                 IDLE_EFFECTS[current][3]
@@ -2097,6 +2137,15 @@ class CodexRGBApp:
         )
         preview_message = tk.StringVar(value="选择模式即可预览，不会立即保存")
         self.idle_preview_message = preview_message
+
+        def preview_selection(key: str, name: str, detail: str) -> None:
+            selected_effect.set(key)
+            description.set(detail)
+            update_effect_color_button()
+            self.preview_idle_effect(
+                key, name, state, selected_effect_color.get()
+            )
+
         effect_grid = tk.Frame(card, bg=CARD_BG)
         effect_grid.pack(fill="x")
         effect_images: dict[str, tk.PhotoImage] = {}
@@ -2112,9 +2161,8 @@ class CodexRGBApp:
                 compound="left",
                 variable=selected_effect,
                 value=key,
-                command=lambda key=key, name=name, detail=detail: (
-                    description.set(detail),
-                    self.preview_idle_effect(key, name, state),
+                command=lambda key=key, name=name, detail=detail: preview_selection(
+                    key, name, detail
                 ),
                 indicatoron=False,
                 selectcolor="#dbeafe",
@@ -2154,13 +2202,71 @@ class CodexRGBApp:
             anchor="w",
         ).pack(fill="x", pady=(0, 7))
 
+        effect_color_row = tk.Frame(card, bg=CARD_BG)
+        effect_color_row.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            effect_color_row,
+            text="灯效基准色",
+            bg=CARD_BG,
+            fg=SECONDARY_TEXT,
+            font=(UI_FONT, 9),
+        ).pack(side="left")
+
+        def choose_effect_color() -> None:
+            key = selected_effect.get()
+            if key not in COLOR_ADJUSTABLE_IDLE_EFFECTS:
+                return
+            selected = ask_rgb_color(
+                dialog,
+                selected_effect_color.get(),
+                title="选择灯效基准颜色",
+            )
+            if not selected:
+                return
+            selected_effect_color.set(selected.lower())
+            update_effect_color_button()
+            name = IDLE_EFFECTS[key][2]
+            self.preview_idle_effect(key, name, state, selected.lower())
+
+        effect_color_button = tk.Button(
+            effect_color_row,
+            command=choose_effect_color,
+            relief="flat",
+            padx=10,
+            pady=5,
+            bg=SUBTLE_BG,
+            fg=TEXT,
+            activebackground="#e8e8ed",
+            activeforeground=TEXT,
+        )
+        effect_color_button.pack(side="right")
+
+        def update_effect_color_button() -> None:
+            key = selected_effect.get()
+            if key in COLOR_ADJUSTABLE_IDLE_EFFECTS:
+                colour = selected_effect_color.get()
+                effect_color_button.configure(
+                    text=f"{chinese_color_name(colour)} · {colour}",
+                    state="normal",
+                )
+            elif key in IDLE_EFFECTS:
+                effect_color_button.configure(
+                    text="此灯效自动变色", state="disabled"
+                )
+            else:
+                effect_color_button.configure(
+                    text="请先选择灯效", state="disabled"
+                )
+
+        update_effect_color_button()
+
         actions = tk.Frame(card, bg=CARD_BG)
         actions.pack(fill="x")
         tk.Button(
             actions,
             text="应用所选灯效",
             command=lambda: self.set_idle_effect(
-                selected_effect.get(), dialog, state
+                selected_effect.get(), dialog, state, selected_effect_color.get()
             ),
             bg=APPLE_BLUE,
             fg="white",
@@ -2209,6 +2315,7 @@ class CodexRGBApp:
         value: str,
         dialog: tk.Toplevel | None = None,
         state: str = "idle",
+        effect_color: str | None = None,
     ) -> None:
         if value not in IDLE_EFFECTS and not self.valid_color(value):
             if self.idle_preview_message is not None:
@@ -2221,6 +2328,12 @@ class CodexRGBApp:
             dialog.grab_release()
             dialog.destroy()
         self.state_colors[state] = value
+        if (
+            value in COLOR_ADJUSTABLE_IDLE_EFFECTS
+            and effect_color is not None
+            and self.valid_color(effect_color)
+        ):
+            self.state_effect_colors[state] = effect_color.lower()
         self.update_color_button(state)
         self.save_settings()
         self.current_state = ""
@@ -2231,7 +2344,11 @@ class CodexRGBApp:
             self.root.after(0, self.refresh)
 
     def preview_idle_effect(
-        self, key: str, name: str, state: str = "idle"
+        self,
+        key: str,
+        name: str,
+        state: str = "idle",
+        effect_color: str | None = None,
     ) -> None:
         if key not in IDLE_EFFECTS:
             return
@@ -2242,20 +2359,31 @@ class CodexRGBApp:
             self.idle_preview_message.set(f"正在预览：{name}（5 秒）")
         threading.Thread(
             target=self.idle_preview_worker,
-            args=(key, token, state),
+            args=(key, token, state, effect_color),
             daemon=True,
         ).start()
 
     def idle_preview_worker(
-        self, key: str, token: int, state: str = "idle"
+        self,
+        key: str,
+        token: int,
+        state: str = "idle",
+        effect_color: str | None = None,
     ) -> None:
         try:
             effect, speed, _name, _description = IDLE_EFFECTS[key]
-            hue, _saturation = self.color_to_hs(DEFAULT_STATE_COLORS[state])
+            base_color = (
+                effect_color
+                if effect_color is not None and self.valid_color(effect_color)
+                else self.state_effect_colors.get(
+                    state, DEFAULT_EFFECT_COLORS[state]
+                )
+            )
+            hue, saturation = self.color_to_hs(base_color)
             applied = self.apply_effect(
                 effect,
                 hue,
-                255,
+                saturation,
                 speed,
                 self.state_brightness[state],
                 preview_token=token,
@@ -2366,6 +2494,11 @@ class CodexRGBApp:
         )
         if color in IDLE_EFFECTS:
             color_name = IDLE_EFFECTS[color][2]
+            if color in COLOR_ADJUSTABLE_IDLE_EFFECTS:
+                effect_color = self.state_effect_colors.get(
+                    state, DEFAULT_EFFECT_COLORS.get(state, "#0000ff")
+                )
+                color_name += " · " + chinese_color_name(effect_color)
         self.color_buttons[state].configure(
             text=f"{self.color_labels[state]} · {color_name}",
             image=preview,
@@ -2413,7 +2546,9 @@ class CodexRGBApp:
             color = (
                 selected
                 if self.valid_color(selected)
-                else DEFAULT_STATE_COLORS["keyboard_mode"]
+                else self.state_effect_colors.get(
+                    "keyboard_mode", DEFAULT_EFFECT_COLORS["keyboard_mode"]
+                )
             )
             hue, saturation = self.color_to_hs(color)
             if selected in IDLE_EFFECTS:
@@ -2437,6 +2572,10 @@ class CodexRGBApp:
             selected = self.state_colors.get("idle", DEFAULT_STATE_COLORS["idle"])
             if selected in IDLE_EFFECTS:
                 effect, speed, effect_name, _description = IDLE_EFFECTS[selected]
+                color = self.state_effect_colors.get(
+                    "idle", DEFAULT_EFFECT_COLORS["idle"]
+                )
+                hue, saturation = self.color_to_hs(color)
                 return effect, hue, saturation, speed, f"空闲中 · {effect_name}", color
         if state in self.state_colors:
             color = self.state_colors[state]

@@ -1,9 +1,18 @@
 """Run with QT_QPA_PLATFORM=offscreen python3 -m unittest test_qt_ui."""
+import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
+from unittest import mock
 from PyQt5 import QtCore, QtWidgets
 import qt_tk_compat as ui
-from codex_rgb_keyboard import CodexRGBApp, IDLE_EFFECTS
+import codex_rgb_keyboard as keyboard_app
+from codex_rgb_keyboard import (
+    COLOR_ADJUSTABLE_IDLE_EFFECTS,
+    CodexRGBApp,
+    IDLE_EFFECTS,
+)
 
 
 class QtRegressionTests(unittest.TestCase):
@@ -61,6 +70,7 @@ class QtRegressionTests(unittest.TestCase):
             self.assertEqual((swatch.pixmap.width(), swatch.pixmap.height()), (28, 14))
             app = CodexRGBApp.__new__(CodexRGBApp)
             app.state_colors = {"idle": key}
+            app.state_effect_colors = {"idle": "#2081ee"}
             effect, _hue, _sat, _speed, label, _color = app.lighting_for("idle")
             self.assertEqual(effect, IDLE_EFFECTS[key][0])
             self.assertIn(IDLE_EFFECTS[key][2], label)
@@ -68,6 +78,7 @@ class QtRegressionTests(unittest.TestCase):
 
     def test_keyboard_mode_accepts_every_idle_effect(self):
         app = CodexRGBApp.__new__(CodexRGBApp)
+        app.state_effect_colors = {"keyboard_mode": "#34c759"}
         for key, (expected_effect, _speed, name, _description) in IDLE_EFFECTS.items():
             self.assertTrue(CodexRGBApp.valid_state_color("keyboard_mode", key))
             app.state_colors = {"keyboard_mode": key}
@@ -79,6 +90,56 @@ class QtRegressionTests(unittest.TestCase):
         self.assertFalse(
             CodexRGBApp.valid_state_color("keyboard_mode", "cycle_left_right")
         )
+
+    def test_adjustable_effect_uses_saved_base_colour(self):
+        app = CodexRGBApp.__new__(CodexRGBApp)
+        app.state_colors = {
+            "idle": "breathing",
+            "keyboard_mode": "solid_reactive",
+        }
+        app.state_effect_colors = {
+            "idle": "#ff0000",
+            "keyboard_mode": "#0000ff",
+        }
+        idle = app.lighting_for("idle")
+        keyboard = app.lighting_for("keyboard_mode")
+        self.assertEqual(idle[1:3], (0, 255))
+        self.assertEqual(keyboard[1:3], (170, 255))
+
+    def test_self_colouring_effects_disable_base_colour(self):
+        automatic = {
+            "jellybean_raindrops",
+            "hue_breathing",
+            "hue_pendulum",
+            "hue_wave",
+            "typing_heatmap",
+            "splash",
+            "multisplash",
+        }
+        self.assertTrue(automatic.isdisjoint(COLOR_ADJUSTABLE_IDLE_EFFECTS))
+        self.assertEqual(
+            COLOR_ADJUSTABLE_IDLE_EFFECTS | automatic,
+            set(IDLE_EFFECTS),
+        )
+
+    def test_existing_solid_colours_migrate_to_effect_colours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "settings.json"
+            settings.write_text(
+                json.dumps({
+                    "state_colors": {
+                        "idle": "#2081ee",
+                        "keyboard_mode": "#34c759",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch.object(keyboard_app, "SETTINGS_FILE", settings):
+                _brightness, _colours, effect_colours = (
+                    CodexRGBApp.load_settings()
+                )
+        self.assertEqual(effect_colours["idle"], "#2081ee")
+        self.assertEqual(effect_colours["keyboard_mode"], "#34c759")
 
 
 if __name__ == "__main__":
