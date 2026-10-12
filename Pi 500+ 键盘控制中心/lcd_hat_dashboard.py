@@ -107,7 +107,7 @@ KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-bambu-live-preview"
+LCD_BUILD_ID = "2026-10-12-key1-restore-hidden-window"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -876,8 +876,38 @@ def launch_desktop_app(command: list[str]) -> None:
         raise RuntimeError("desktop application launch failed")
 
 
-def focus_or_launch_window(match: str, command: list[str]) -> str:
-    """Focus an existing Wayland window, otherwise launch its single instance."""
+def signal_single_instance(lock_path: Path) -> bool:
+    """Ask a live single-instance application to show its hidden window."""
+    try:
+        lock = lock_path.open("r+")
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.seek(0)
+            try:
+                running_pid = int(lock.read().strip())
+                os.kill(running_pid, signal.SIGUSR1)
+            except (ValueError, ProcessLookupError, PermissionError):
+                return False
+            return True
+        else:
+            # No process owns the advisory lock. Leave the stale file for the
+            # normal launcher, which safely replaces its stored PID.
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return False
+    finally:
+        lock.close()
+
+
+def focus_or_launch_window(
+    match: str,
+    command: list[str],
+    activation_lock: str | None = None,
+) -> str:
+    """Focus, explicitly reveal, or launch a desktop application."""
     if not WLRCTL_PATH.is_file():
         raise RuntimeError("Wayland window helper is not installed")
     focused = run_desktop_command(
@@ -885,6 +915,12 @@ def focus_or_launch_window(match: str, command: list[str]) -> str:
     )
     if focused.returncode == 0:
         return "Focused"
+    if activation_lock:
+        runtime_dir = Path(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        )
+        if signal_single_instance(runtime_dir / activation_lock):
+            return "Shown"
     launch_desktop_app(command)
     return "Opened"
 
@@ -2211,6 +2247,7 @@ def run(
             "title": "Pi 500+",
             "match": "title:Pi 500+ 键盘控制中心",
             "command": [str(APP_DIR / "run.sh")],
+            "activation_lock": "codex-rgb-keyboard.lock",
         },
         {
             "button": key2,
@@ -2607,6 +2644,7 @@ def run(
                         result = focus_or_launch_window(
                             str(key_state["match"]),
                             list(key_state["command"]),
+                            key_state.get("activation_lock"),
                         )
                         overlay = render_action(title, result)
                         runtime_status["last_side_key_hold_result"] = result.lower()

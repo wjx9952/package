@@ -3,6 +3,11 @@
 
 import unittest
 from unittest import mock
+import fcntl
+import os
+import signal
+import tempfile
+from pathlib import Path
 
 import lcd_hat_dashboard as dashboard
 
@@ -36,6 +41,25 @@ class Key1DecisionTrackerTests(unittest.TestCase):
 
 
 class DesktopLaunchTests(unittest.TestCase):
+    def test_signal_single_instance_reveals_hidden_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "app.lock"
+            with lock_path.open("w+") as owner:
+                owner.write(str(os.getpid()))
+                owner.flush()
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with mock.patch.object(dashboard.os, "kill") as kill:
+                    self.assertTrue(dashboard.signal_single_instance(lock_path))
+                kill.assert_called_once_with(os.getpid(), signal.SIGUSR1)
+
+    def test_signal_single_instance_ignores_stale_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "app.lock"
+            lock_path.write_text("1234", encoding="utf-8")
+            with mock.patch.object(dashboard.os, "kill") as kill:
+                self.assertFalse(dashboard.signal_single_instance(lock_path))
+            kill.assert_not_called()
+
     def test_desktop_environment_adds_session_bus_address(self) -> None:
         with mock.patch.dict(
             dashboard.os.environ,

@@ -16,7 +16,7 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$STATE_DIR/backups/$STAMP"
 
 required_files=(
-    codex_rgb_keyboard.py tray_icon.py quota_server.py lcd_hat_dashboard.py
+    codex_rgb_keyboard.py qt_tk_compat.py tray_icon.py quota_server.py lcd_hat_dashboard.py
     bambu_status_monitor.py bambu-config.example.json bambu-h2d-monitor.service
     codex_usage_monitor.py pi500_bt_keyboard_daemon.py run.sh settings.json
     restart-keyboard-control-center.sh restart-lcd-dashboard.sh
@@ -46,7 +46,7 @@ done
 
 echo "[2/7] 安装应用文件…"
 for file in \
-    codex_rgb_keyboard.py tray_icon.py quota_server.py lcd_hat_dashboard.py \
+    codex_rgb_keyboard.py qt_tk_compat.py tray_icon.py quota_server.py lcd_hat_dashboard.py \
     bambu_status_monitor.py \
     codex_usage_monitor.py run.sh uninstall.sh uninstall-root.sh install-root.sh \
     pi500_bt_keyboard_daemon.py restart-keyboard-control-center.sh \
