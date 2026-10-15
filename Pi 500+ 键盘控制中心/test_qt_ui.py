@@ -141,6 +141,17 @@ class QtRegressionTests(unittest.TestCase):
         self.assertEqual(effect_colours["idle"], "#2081ee")
         self.assertEqual(effect_colours["keyboard_mode"], "#34c759")
 
+    def test_keyboard_mode_applies_same_hue_and_saturation_as_preview(self):
+        app = object.__new__(CodexRGBApp)
+        app.state_colors = {"keyboard_mode": "breathing"}
+        app.state_effect_colors = {"keyboard_mode": "#8090a0"}
+        effect, hue, saturation, speed, _label, _colour = app.lighting_for(
+            "keyboard_mode"
+        )
+        expected_hue, expected_saturation = app.color_to_hs("#8090a0")
+        self.assertEqual((effect, speed), IDLE_EFFECTS["breathing"][:2])
+        self.assertEqual((hue, saturation), (expected_hue, expected_saturation))
+
 
 if __name__ == "__main__":
     unittest.main()

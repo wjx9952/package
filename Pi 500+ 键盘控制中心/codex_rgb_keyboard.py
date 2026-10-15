@@ -86,11 +86,6 @@ DEFAULT_EFFECT_COLORS = {
 }
 
 
-# Newer Codex builds wrap permission prompts inside an exec tool call. The
-# shared monitor predates that event shape, so extend its predicate before
-# read_codex_status() scans a session. Function-call outputs still clear the
-# pending call normally once the user has answered the prompt.
-_legacy_confirmation_check = codex_monitor.call_needs_confirmation
 
 
 def keyboard_activity_token() -> int:
@@ -122,19 +117,7 @@ def write_lighting_runtime_status(status: dict) -> None:
 
 
 def call_needs_confirmation(payload: dict) -> bool:
-    if _legacy_confirmation_check(payload):
-        return True
-    name = str(payload.get("name", ""))
-    if name in {"request_permissions", "request_user_input"}:
-        return True
-    tool_input = payload.get("input", "")
-    return isinstance(tool_input, str) and (
-        "tools.request_permissions(" in tool_input
-        or "tools.request_user_input(" in tool_input
-    )
-
-
-codex_monitor.call_needs_confirmation = call_needs_confirmation
+    return codex_monitor.call_needs_confirmation(payload)
 
 
 def transition_levels(start: int, end: int, steps: int = TRANSITION_STEPS) -> list[int]:
@@ -2554,7 +2537,7 @@ class CodexRGBApp:
             if selected in IDLE_EFFECTS:
                 effect, speed, effect_name, _description = IDLE_EFFECTS[selected]
                 return (
-                    effect, hue, 255, speed,
+                    effect, hue, saturation, speed,
                     f"键盘模式 · {effect_name}", color,
                 )
             return 2, hue, saturation, 128, "键盘模式", color

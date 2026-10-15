@@ -236,14 +236,14 @@ def call_needs_confirmation(payload: dict[str, Any]) -> bool:
     tool_input = payload.get("input", payload.get("arguments", ""))
     if not isinstance(tool_input, str):
         return False
-    call = re.search(
+    calls = list(re.finditer(
         r"\bawait\s+tools\."
         r"(request_permissions|request_user_input|exec_command)\s*\(",
         tool_input,
-    )
-    if not call:
+    ))
+    if not calls:
         return False
-    if call.group(1) in {"request_permissions", "request_user_input"}:
+    if any(call.group(1) in {"request_permissions", "request_user_input"} for call in calls):
         return True
     return bool(re.search(
         r"(?<!\w)[\"']?sandbox_permissions[\"']?\s*:\s*"

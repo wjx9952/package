@@ -56,6 +56,27 @@ def _alignment(anchor: str | None) -> QtCore.Qt.Alignment:
     return horizontal | vertical
 
 
+def _install_light_edit_menu(entry: QtWidgets.QLineEdit) -> None:
+    """Use an explicit light palette for Qt's generated edit context menu."""
+    menu_style = (
+        "QMenu {background:#ffffff; color:#1d1d1f; border:1px solid #d2d2d7;"
+        "padding:4px;}"
+        "QMenu::item {padding:6px 28px 6px 10px; border-radius:4px;}"
+        "QMenu::item:selected {background:#0071e3; color:#ffffff;}"
+        "QMenu::item:disabled {color:#a1a1a6;}"
+        "QMenu::separator {height:1px; background:#e5e5ea; margin:4px 7px;}"
+    )
+
+    def show_menu(position: QtCore.QPoint) -> None:
+        menu = entry.createStandardContextMenu()
+        menu.setStyleSheet(menu_style)
+        menu.exec_(entry.mapToGlobal(position))
+        menu.deleteLater()
+
+    entry.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+    entry.customContextMenuRequested.connect(show_menu)
+
+
 class Variable:
     def __init__(self, value: Any = "") -> None:
         self._value = value
@@ -610,6 +631,7 @@ class Entry(Misc):
         self.variable = textvariable
         entry.setFont(_font(font))
         entry.setReadOnly(state == "readonly")
+        _install_light_edit_menu(entry)
         if width:
             entry.setMinimumWidth(int(width) * 9)
         if justify == "right":
@@ -646,6 +668,7 @@ class Spinbox(Entry):
         self.variable = textvariable
         spin.setRange(int(from_), int(to))
         spin.setFont(_font(font))
+        _install_light_edit_menu(spin.lineEdit())
         if width:
             spin.setMinimumWidth(int(width) * 10)
         if textvariable:

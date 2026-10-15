@@ -95,15 +95,24 @@ class BambuStatusTests(unittest.TestCase):
         self.assertEqual(image.size, (240, 240))
         self.assertGreater(len(image.getcolors(maxcolors=100_000)), 10)
 
-    def test_bambu_page_uses_live_camera_frame_when_available(self) -> None:
+    def test_dual_nozzle_temperatures_use_telemetry_ids(self) -> None:
+        payload = sample_payload()
+        payload["print"]["device"] = {"extruder": {"info": [
+            {"id": 1, "temp": (210 << 16) | 205},
+            {"id": 0, "temp": (230 << 16) | 228},
+        ]}}
+        status = dashboard.bambu_status_from_payload(payload, now=1_001.0)
+        self.assertEqual((status["nozzle_left"], status["nozzle_left_target"]), (205, 210))
+        self.assertEqual((status["nozzle_right"], status["nozzle_right_target"]), (228, 230))
+
+    def test_bambu_page_no_longer_displays_camera_frame(self) -> None:
         status = dashboard.bambu_status_from_payload(sample_payload(), now=1_001.0)
         with TemporaryDirectory() as directory:
             frame = Path(directory) / "camera.jpg"
             Image.new("RGB", (120, 80), (231, 17, 199)).save(frame)
             image = dashboard.render_bambu_status(status, camera_frame_path=frame)
-        colours = image.getcolors(maxcolors=100_000)
-        self.assertIsNotNone(colours)
-        self.assertTrue(any(red > 180 and blue > 150 for _, (red, _green, blue) in colours))
+        without_camera = dashboard.render_bambu_status(status, camera_frame_path=Path("/missing-camera.jpg"))
+        self.assertEqual(image.tobytes(), without_camera.tobytes())
 
     def test_monitor_deep_merge_keeps_unchanged_fields(self) -> None:
         state = {"print": {"gcode_state": "RUNNING", "mc_percent": 10}}

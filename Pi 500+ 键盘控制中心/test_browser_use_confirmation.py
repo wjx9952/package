@@ -21,6 +21,19 @@ def browser_call(code: str) -> dict:
 
 
 class BrowserUseConfirmationTests(unittest.TestCase):
+    def test_permission_after_normal_command_is_detected_by_both_consumers(self) -> None:
+        import codex_rgb_keyboard as keyboard
+        payload = {"type": "custom_tool_call", "name": "exec", "input":
+                   'await tools.exec_command({cmd:"pwd"}); '
+                   'await tools.request_permissions({permissions:{network:{enabled:true}}});'}
+        self.assertTrue(monitor.call_needs_confirmation(payload))
+        self.assertTrue(dashboard.codex_monitor_module().call_needs_confirmation(payload))
+        self.assertTrue(keyboard.call_needs_confirmation(payload))
+
+    def test_ordinary_command_does_not_require_confirmation(self) -> None:
+        payload = {"name": "exec", "input": 'await tools.exec_command({cmd:"pwd"});'}
+        self.assertFalse(monitor.call_needs_confirmation(payload))
+
     def test_file_upload_requires_confirmation(self) -> None:
         payload = browser_call(
             "let chooser = await chooserP; "
@@ -30,7 +43,7 @@ class BrowserUseConfirmationTests(unittest.TestCase):
         self.assertTrue(monitor.call_needs_confirmation(payload))
         self.assertEqual(
             dashboard.confirmation_text(payload),
-            ("Codex 需要确认", "浏览器请求上传文件"),
+            ("Codex Approval", "浏览器请求上传文件"),
         )
 
     def test_read_only_browser_call_is_not_confirmation(self) -> None:

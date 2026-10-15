@@ -41,6 +41,25 @@ class Key1DecisionTrackerTests(unittest.TestCase):
 
 
 class DesktopLaunchTests(unittest.TestCase):
+    @mock.patch.object(dashboard, "signal_single_instance", return_value=True)
+    @mock.patch.object(dashboard, "run_desktop_command")
+    def test_hidden_single_instance_reports_focused(
+        self,
+        run_desktop_command,
+        _signal_single_instance,
+    ) -> None:
+        run_desktop_command.return_value.returncode = 1
+        helper = mock.Mock()
+        helper.is_file.return_value = True
+        helper.__str__ = mock.Mock(return_value="/tmp/wlrctl")
+        with mock.patch.object(dashboard, "WLRCTL_PATH", helper):
+            result = dashboard.focus_or_launch_window(
+                "title:Pi 500+ 键盘控制中心",
+                ["/tmp/run.sh"],
+                "codex-rgb-keyboard.lock",
+            )
+        self.assertEqual(result, "Focused")
+
     def test_signal_single_instance_reveals_hidden_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lock_path = Path(directory) / "app.lock"
@@ -96,6 +115,93 @@ class DesktopLaunchTests(unittest.TestCase):
             start_new_session=True,
             stdout=dashboard.subprocess.DEVNULL,
             stderr=dashboard.subprocess.DEVNULL,
+        )
+
+
+class LockScreenTests(unittest.TestCase):
+    @mock.patch.object(dashboard, "set_windows_session_locked")
+    @mock.patch.object(dashboard, "bt_keyboard_request")
+    def test_windows_lock_is_always_sent_and_recorded(
+        self,
+        bt_keyboard_request,
+        set_windows_session_locked,
+    ) -> None:
+        bt_keyboard_request.return_value = {"ok": True}
+        dashboard.request_windows_lock()
+        bt_keyboard_request.assert_called_once_with("lock_windows")
+        set_windows_session_locked.assert_called_once_with(True)
+
+    @mock.patch.object(dashboard, "set_windows_session_locked")
+    @mock.patch.object(dashboard, "bt_keyboard_request")
+    def test_failed_windows_lock_is_not_recorded(
+        self,
+        bt_keyboard_request,
+        set_windows_session_locked,
+    ) -> None:
+        bt_keyboard_request.return_value = {"ok": False, "error": "offline"}
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            dashboard.request_windows_lock()
+        set_windows_session_locked.assert_not_called()
+
+    def test_clean_early_swaylock_exit_is_failure(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = 0
+        with self.assertRaisesRegex(RuntimeError, r"exited before locking \(0\)"):
+            dashboard.wait_for_raspberry_pi_lock(
+                process,
+                is_locked=lambda: False,
+            )
+
+    def test_running_swaylock_must_be_observable(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        locked = mock.Mock(side_effect=[False, True])
+        with mock.patch.object(dashboard.time, "sleep"):
+            dashboard.wait_for_raspberry_pi_lock(process, is_locked=locked)
+        self.assertEqual(locked.call_count, 2)
+
+    def test_display_standby_only_runs_inside_lock_cycle(self) -> None:
+        self.assertEqual(
+            dashboard.locked_display_policy(False, False, 0.0, 10.0),
+            (False, "lock_cycle_inactive"),
+        )
+        self.assertEqual(
+            dashboard.locked_display_policy(True, False, 0.0, 10.0),
+            (True, "standby"),
+        )
+
+    def test_keyboard_activity_temporarily_keeps_display_awake(self) -> None:
+        self.assertEqual(
+            dashboard.locked_display_policy(True, False, 20.0, 10.0),
+            (False, "keyboard_activity"),
+        )
+
+    def test_locked_feedback_is_shown_before_standby(self) -> None:
+        self.assertEqual(
+            dashboard.locked_display_policy(
+                True, False, 0.0, 10.0, standby_not_before=12.5
+            ),
+            (False, "lock_feedback"),
+        )
+        self.assertEqual(
+            dashboard.locked_display_policy(
+                True, False, 0.0, 12.5, standby_not_before=12.5
+            ),
+            (True, "standby"),
+        )
+
+    def test_either_real_unlock_ends_current_cycle(self) -> None:
+        self.assertTrue(
+            dashboard.lock_cycle_session_unlocked(True, True, False, True)
+        )
+        self.assertTrue(
+            dashboard.lock_cycle_session_unlocked(True, True, True, False)
+        )
+        self.assertFalse(
+            dashboard.lock_cycle_session_unlocked(True, True, True, True)
+        )
+        self.assertFalse(
+            dashboard.lock_cycle_session_unlocked(False, True, False, True)
         )
 
 if __name__ == "__main__":

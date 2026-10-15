@@ -105,9 +105,11 @@ TUN_TOGGLE_COOLDOWN_SECONDS = 0.6
 KEY3_COOLDOWN_SECONDS = 0.6
 KEY3_DOUBLE_PRESS_SECONDS = 0.4
 KEY_APP_HOLD_SECONDS = 2.0
+PI_LOCK_START_TIMEOUT_SECONDS = 1.0
+PI_LOCK_START_CHECK_SECONDS = 0.05
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-12-key1-restore-hidden-window"
+LCD_BUILD_ID = "2026-10-14-approval-dot-centered"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -458,11 +460,35 @@ def lock_raspberry_pi() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # Detect immediate startup errors while leaving the locker independent of
-    # the LCD event loop until the user unlocks the desktop.
-    time.sleep(0.15)
-    if process.poll() not in (None, 0):
-        raise RuntimeError("system lock screen failed to start")
+    try:
+        wait_for_raspberry_pi_lock(process)
+    except Exception:
+        if process.poll() is None:
+            process.terminate()
+        raise
+
+
+def wait_for_raspberry_pi_lock(
+    process,
+    *,
+    is_locked=None,
+    timeout: float = PI_LOCK_START_TIMEOUT_SECONDS,
+    check_interval: float = PI_LOCK_START_CHECK_SECONDS,
+) -> None:
+    """Require swaylock to remain alive and become observable before success."""
+    is_locked = is_locked or raspberry_pi_locked
+    deadline = time.monotonic() + timeout
+    while True:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                f"system lock screen exited before locking ({return_code})"
+            )
+        if is_locked():
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("system lock screen did not become active")
+        time.sleep(check_interval)
 
 
 def ensure_raspberry_pi_locked(
@@ -558,6 +584,14 @@ def set_windows_session_locked(locked: bool) -> None:
     os.replace(temporary, WINDOWS_SESSION_FILE)
 
 
+def request_windows_lock() -> None:
+    """Send idempotent Win+L and record the requested Windows lock state."""
+    result = bt_keyboard_request("lock_windows")
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "unknown error"))
+    set_windows_session_locked(True)
+
+
 def raspberry_pi_locked() -> bool:
     try:
         result = subprocess.run(
@@ -572,39 +606,43 @@ def raspberry_pi_locked() -> bool:
         return False
 
 
+def locked_display_policy(
+    lock_cycle_active: bool,
+    sequence_unlock_active: bool,
+    lock_wake_until: float,
+    now: float,
+    standby_not_before: float = 0.0,
+) -> tuple[bool, str]:
+    """Return LCD standby state and the reason it is currently awake."""
+    if not lock_cycle_active:
+        return False, "lock_cycle_inactive"
+    if now < standby_not_before:
+        return False, "lock_feedback"
+    if sequence_unlock_active:
+        return False, "unlock_sequence"
+    if now < lock_wake_until:
+        return False, "keyboard_activity"
+    return True, "standby"
+
+
+def lock_cycle_session_unlocked(
+    pi_was_locked: bool,
+    windows_was_locked: bool,
+    pi_locked: bool,
+    windows_locked: bool,
+) -> bool:
+    """Detect the first real unlock transition during the current cycle."""
+    return (pi_was_locked and not pi_locked) or (
+        windows_was_locked and not windows_locked
+    )
+
+
 def codex_monitor_module():
     """Load the shared monitor with support for current desktop event shapes."""
     if str(CODEX_MONITOR_DIR) not in sys.path:
         sys.path.insert(0, str(CODEX_MONITOR_DIR))
     import codex_usage_monitor as monitor
 
-    if not getattr(monitor, "_pi500_confirmation_extended", False):
-        original_check = monitor.call_needs_confirmation
-
-        def extended_check(payload: dict) -> bool:
-            name = str(payload.get("name", ""))
-            if name in {"request_permissions", "request_user_input"}:
-                return True
-            tool_input = payload.get("input", payload.get("arguments", ""))
-            if not isinstance(tool_input, str):
-                return original_check(payload)
-            call = re.search(
-                r"\bawait\s+tools\."
-                r"(request_permissions|request_user_input|exec_command)\s*\(",
-                tool_input,
-            )
-            if not call:
-                return original_check(payload)
-            if call.group(1) in {"request_permissions", "request_user_input"}:
-                return True
-            return bool(re.search(
-                r"(?<!\w)[\"']?sandbox_permissions[\"']?\s*:\s*"
-                r"[\"']require_escalated[\"']",
-                tool_input,
-            ))
-
-        monitor.call_needs_confirmation = extended_check
-        monitor._pi500_confirmation_extended = True
 
     return monitor
 
@@ -754,7 +792,7 @@ def confirmation_text(payload: dict) -> tuple[str, str]:
     """Create a compact Chinese title and user-facing request description."""
     monitor = codex_monitor_module()
     if monitor.browser_use_permission_kind(payload) == "upload":
-        return "Codex 需要确认", "浏览器请求上传文件"
+        return "Codex Approval", "浏览器请求上传文件"
 
     name = str(payload.get("name", ""))
     raw = payload.get("arguments", payload.get("input", ""))
@@ -793,7 +831,7 @@ def confirmation_text(payload: dict) -> tuple[str, str]:
             detail = "请求访问受保护的文件"
         else:
             detail = "请求执行需要你授权的操作"
-    return "Codex 需要确认", detail
+    return "Codex Approval", detail
 
 
 def desktop_environment() -> dict[str, str]:
@@ -920,7 +958,7 @@ def focus_or_launch_window(
             os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         )
         if signal_single_instance(runtime_dir / activation_lock):
-            return "Shown"
+            return "Focused"
     launch_desktop_app(command)
     return "Opened"
 
@@ -1470,7 +1508,21 @@ def bambu_status_from_payload(
         )),
     )
     finish_at = datetime.fromtimestamp(epoch_now + remaining_minutes * 60).astimezone()
+    nozzle_temperatures = {}
+    device = print_data.get("device") or {}
+    extruder = device.get("extruder") or {}
+    # H2D telemetry IDs: 0 right, 1 left. Low/high words are current/target.
+    for item in extruder.get("info", []):
+        if not isinstance(item, dict) or item.get("id") not in (0, 1):
+            continue
+        packed = item.get("temp")
+        if not isinstance(packed, (int, float)) or packed < 0:
+            continue
+        side = "right" if item["id"] == 0 else "left"
+        nozzle_temperatures["nozzle_" + side] = int(packed) & 0xFFFF
+        nozzle_temperatures["nozzle_" + side + "_target"] = (int(packed) >> 16) & 0xFFFF
     return {
+        **nozzle_temperatures,
         "status": status,
         "status_colour": status_colour,
         "raw_status": str(raw_status or ""),
@@ -1545,6 +1597,29 @@ def shift_frame(image: Image.Image, offset: tuple[int, int]) -> Image.Image:
     return shifted
 
 
+class SmoothDraw:
+    """Supersample rounded shapes only; keep text at native LCD resolution."""
+
+    def __init__(self, image):
+        self.image = image
+        self.draw = ImageDraw.Draw(image)
+
+    def __getattr__(self, name):
+        return getattr(self.draw, name)
+
+    def rounded_rectangle(self, box, radius=0, fill=None, outline=None, width=1):
+        left, top, right, bottom = map(int, box)
+        w, h = right - left + 1, bottom - top + 1
+        scale = 4
+        layer = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+        ImageDraw.Draw(layer).rounded_rectangle(
+            (0, 0, w * scale - 1, h * scale - 1),
+            radius=radius * scale, fill=fill, outline=outline, width=width * scale,
+        )
+        layer = layer.resize((w, h), Image.Resampling.LANCZOS)
+        self.image.paste(layer, (left, top), layer.getchannel("A"))
+
+
 def draw_rounded_gradient(
     image: Image.Image,
     box: tuple[int, int, int, int],
@@ -1561,8 +1636,12 @@ def draw_rounded_gradient(
         amount = x / max(1, width - 1)
         colour = tuple(round(a + (b - a) * amount) for a, b in zip(start, end))
         gradient_draw.line((x, 0, x, height), fill=colour)
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius=radius, fill=255)
+    scale = 4
+    mask = Image.new("L", (width * scale, height * scale), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, width * scale - 1, height * scale - 1), radius=radius * scale, fill=255,
+    )
+    mask = mask.resize((width, height), Image.Resampling.LANCZOS)
     image.paste(gradient, (left, top), mask)
 
 
@@ -1669,7 +1748,7 @@ def render(
     tun_online: bool = False,
 ) -> Image.Image:
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    draw = ImageDraw.Draw(image)
+    draw = SmoothDraw(image)
     title = "Codex Usage"
     title_box = draw.textbbox((0, 0), title, font=F_TITLE)
     draw.text(((WIDTH - (title_box[2] - title_box[0])) // 2, 2), title,
@@ -1793,7 +1872,7 @@ def _draw_bambu_preview(
         (0, 0, size[0] - 1, size[1] - 1), radius=8, fill=255
     )
     image.paste(preview, (left, top), mask)
-    ImageDraw.Draw(image).rounded_rectangle(box, radius=8, outline=(29, 78, 100), width=1)
+    SmoothDraw(image).rounded_rectangle(box, radius=8, outline=(29, 78, 100), width=1)
 
 
 def render_bambu_status(
@@ -1803,7 +1882,7 @@ def render_bambu_status(
 ) -> Image.Image:
     """Render the compact Bambu page using the Codex Usage type hierarchy."""
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    draw = ImageDraw.Draw(image)
+    draw = SmoothDraw(image)
     title = "Bambu Status"
     title_width = draw.textlength(title, font=F_TITLE)
     draw.text(((WIDTH - title_width) // 2, 2), title, font=F_TITLE, fill=(250, 250, 252))
@@ -1831,101 +1910,82 @@ def render_bambu_status(
     draw_status_dot(image, (10, 46, 18, 54), status_colour)
     draw.text((23, 44), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
 
-    # Compact temperature cards sit directly below the printer state.
-    draw.rounded_rectangle(
-        (7, 59, 116, 91), radius=8, fill=(10, 15, 21),
-        outline=(39, 49, 63), width=1,
-    )
-    draw.text((15, 63), "Nozzle", font=F_META, fill=(188, 196, 211))
-    nozzle = f"{int(status.get('nozzle', 0))}° / {int(status.get('nozzle_target', 0))}°"
-    nozzle_width = draw.textlength(nozzle, font=F_BAMBU_VALUE)
-    draw.text((108 - nozzle_width, 72), nozzle, font=F_BAMBU_VALUE, fill=(248, 249, 252))
+    # Use visible glyph bounds: font ascent must not change row spacing.
+    def label(x, y, value, size, *, bold=False, muted=False, right=False, accent=False):
+        face = cjk_font(size, bold=bold)
+        value = _fit_lcd_text(draw, str(value), face, 206)
+        bounds = draw.textbbox((0, 0), value, font=face)
+        if right:
+            x -= bounds[2] - bounds[0]
+        colour = (25, 209, 223) if accent else (
+            (188, 197, 208) if muted else (237, 241, 247)
+        )
+        draw.text((x - bounds[0], y - bounds[1]), value, font=face, fill=colour)
 
-    draw.rounded_rectangle(
-        (123, 59, 233, 91), radius=8, fill=(10, 15, 21),
-        outline=(39, 49, 63), width=1,
-    )
-    draw.text((131, 63), "Bed", font=F_META, fill=(188, 196, 211))
-    bed = f"{int(status.get('bed', 0))}° / {int(status.get('bed_target', 0))}°"
-    bed_width = draw.textlength(bed, font=F_BAMBU_VALUE)
-    draw.text((225 - bed_width, 72), bed, font=F_BAMBU_VALUE, fill=(248, 249, 252))
+    def card(box, radius=8):
+        draw.rounded_rectangle(box, radius=radius, fill=(10, 15, 21),
+                               outline=(39, 49, 63), width=1)
 
-    # File, live model image and print progress form one large Codex-style card.
-    draw.rounded_rectangle(
-        (7, 97, 233, 239),
-        radius=15,
-        fill=(10, 15, 21),
-        outline=(39, 49, 63),
-        width=1,
-    )
+    def temperature(key):
+        current, target = status.get(key), status.get(key + "_target")
+        return (
+            ("--" if current is None else str(int(current))) + "°C / "
+            + ("--" if target is None else str(int(target))) + "°C"
+        )
 
-    job_name = _fit_lcd_text(
-        draw,
-        str(status.get("job_name", "Print Job")),
-        F_BAMBU_JOB,
-        WIDTH - 34,
-    )
-    draw.text((17, 103), job_name, font=F_BAMBU_JOB, fill=(248, 249, 252))
+    card((7, 59, 116, 91), 12)
+    card((123, 59, 233, 91), 12)
+    label(15, 64, "Left nozzle", 8, muted=True)
+    label(108, 76, temperature("nozzle_left"), 11, bold=True, right=True)
+    label(131, 64, "Right nozzle", 8, muted=True)
+    label(225, 76, temperature("nozzle_right"), 11, bold=True, right=True)
+    # Five clear pixel rows between each pair of vertically stacked cards.
+    card((7, 97, 233, 124), 12)
+    bed_text = temperature("bed")
+    bed_bounds = draw.textbbox((0, 0), bed_text, font=cjk_font(14, bold=True))
+    bed_text_y = 97 + (28 - (bed_bounds[3] - bed_bounds[1])) // 2
+    bed_label_bounds = draw.textbbox((0, 0), "Bed", font=cjk_font(10))
+    bed_label_y = 97 + (28 - (bed_label_bounds[3] - bed_label_bounds[1])) // 2
+    label(15, bed_label_y, "Bed", 10, muted=True)
+    label(225, bed_text_y, bed_text, 14, bold=True, right=True)
 
-    filament_colour = tuple(status.get("filament_colour", (32, 129, 238)))
-    _draw_bambu_preview(
-        image, (15, 122, 89, 174), camera_frame_path, filament_colour
-    )
-
-    material = f"{status.get('material', 'Filament')} · {status.get('colour_name', 'Blue')}"
-    draw.text((98, 123), material, font=F_SMALL, fill=(248, 249, 252))
+    # Match the Usage card's lower edge; reserve padding below Finish.
+    card((7, 130, 233, 236), 15)
+    label(17, 139, status.get("job_name", "Print Job"), 11, bold=True)
+    label(17, 155, f"{status.get('material', 'Filament')} · {status.get('colour_name', '--')}", 10)
     layer = int(status.get("layer", 0))
     total_layers = int(status.get("total_layers", 0))
-    draw.text(
-        (98, 145),
-        f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
-        font=F_SMALL,
-        fill=(188, 196, 211),
-    )
+    label(17, 169, f"Layer {layer} / {total_layers}" if total_layers else f"Layer {layer}",
+          10, muted=True)
 
     percent = _bounded_percent(status.get("percent", 0))
     percent_text = f"{percent}%"
-    # Both progress labels share one baseline even though their font sizes differ.
-    progress_baseline = 194
-    draw.text(
-        (223, progress_baseline),
-        percent_text,
-        font=F_PERCENT,
-        fill=(43, 224, 235),
-        anchor="rs",
-    )
+    percent_bounds = draw.textbbox((0, 0), percent_text, font=F_PERCENT)
+    percent_width = percent_bounds[2] - percent_bounds[0]
+    # Use exactly the Usage percentage font, right-aligned above the bar.
+    draw.text((223 - percent_width - percent_bounds[0], 201 - percent_bounds[3]),
+              percent_text, font=F_PERCENT, fill=(25, 209, 223))
     remaining = _bambu_remaining_text(status.get("remaining_minutes", 0))
-    draw.text(
-        (17, progress_baseline),
-        remaining,
-        font=F_TIME,
-        fill=(248, 249, 252),
-        anchor="ls",
-    )
-    bar = (17, 201, 223, 209)
-    draw.rounded_rectangle(bar, radius=4, fill=(42, 47, 58))
+    # Keep long durations clear of the right-aligned percentage.
+    remaining_width = 223 - percent_width - 17 - 8
+    remaining_size = 14
+    while remaining_size > 9 and draw.textlength(remaining, font=cjk_font(remaining_size, bold=True)) > remaining_width:
+        remaining_size -= 1
+    label(17, 185, remaining, remaining_size, bold=True)
+    bar = (17, 205, 223, 210)
+    draw.rounded_rectangle(bar, radius=3, fill=(42, 47, 58))
     if percent:
         fill_right = bar[0] + max(7, round((bar[2] - bar[0]) * percent / 100))
-        draw_rounded_gradient(
-            image,
-            (bar[0], bar[1], fill_right, bar[3]),
-            (31, 202, 255),
-            (37, 238, 216),
-            4,
-        )
-    draw.text(
-        (17, 216),
-        "Finish " + str(status.get("finish_time", "--:--")),
-        font=F_TIME,
-        fill=(248, 249, 252),
-    )
+        draw_rounded_gradient(image, (bar[0], bar[1], fill_right, bar[3]),
+                              (31, 202, 255), (37, 238, 216), 3)
+    label(17, 217, "Finish " + str(status.get("finish_time", "--:--")), 12, bold=True)
     return image.rotate(90)
 
 
 def render_action(title: str, detail: str = "", *, failed: bool = False) -> Image.Image:
     """Render transient button feedback as a full-screen page."""
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    draw = ImageDraw.Draw(image)
+    draw = SmoothDraw(image)
     accent = (255, 59, 48) if failed else (31, 111, 235)
     pale = (55, 19, 20) if failed else (9, 39, 70)
     draw.rounded_rectangle((13, 12, 227, 226), radius=25, fill=(10, 15, 21),
@@ -1981,7 +2041,7 @@ def wrap_by_width(
 def render_confirmation(payload: dict) -> Image.Image:
     """Render the pending Codex request as a dedicated full-screen page."""
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    draw = ImageDraw.Draw(image)
+    draw = SmoothDraw(image)
     accent = (255, 149, 0)
     title, detail = confirmation_text(payload)
 
@@ -1989,10 +2049,14 @@ def render_confirmation(payload: dict) -> Image.Image:
         (8, 8, 232, 232), radius=22, fill=(14, 16, 21),
         outline=(92, 66, 30), width=2,
     )
-    draw.ellipse((20, 22, 32, 34), fill=accent)
+    title_bounds = draw.textbbox((40, 16), title, font=F_CONFIRM_TITLE)
+    title_centre_y = (title_bounds[1] + title_bounds[3]) // 2
+    draw_status_dot(
+        image,
+        (20, title_centre_y - 6, 32, title_centre_y + 6),
+        accent,
+    )
     draw.text((40, 16), title, font=F_CONFIRM_TITLE, fill=(250, 250, 252))
-    draw.line((20, 53, 220, 53), fill=(57, 61, 70), width=1)
-
     lines = wrap_by_width(draw, detail, F_CONFIRM_BODY, 194, 5)
     y = 69
     for line in lines:
@@ -2224,6 +2288,7 @@ def run(
     confirmation_signature = ""
     overlay: Image.Image | None = None
     overlay_until = 0.0
+    lock_feedback_overlay: Image.Image | None = None
     queued_overlay: Image.Image | None = None
     queued_overlay_after: Image.Image | None = None
     queued_overlay_duration = 0.0
@@ -2297,11 +2362,14 @@ def run(
     joystick_press_armed = False
     joystick_release_started_at: float | None = None
     screen_standby = False
-    both_sessions_locked = False
+    lock_cycle_active = False
+    lock_cycle_pi_was_locked = False
+    lock_cycle_windows_was_locked = False
     last_keyboard_activity = keyboard_activity_token()
     last_keyboard_unlock = keyboard_unlock_token()
     sequence_unlock_active = False
     lock_wake_until = 0.0
+    lock_standby_after = 0.0
     runtime_status = {
         "build_id": LCD_BUILD_ID,
         "pid": os.getpid(),
@@ -2313,6 +2381,12 @@ def run(
         "last_side_key_hold": "",
         "last_side_key_hold_result": "",
         "last_side_key_hold_error": "",
+        "pi_locked": False,
+        "windows_locked": False,
+        "lock_cycle_active": False,
+        "screen_standby": False,
+        "lcd_wake_reason": "lock_cycle_inactive",
+        "last_lock_error": "",
     }
     next_runtime_status_write = 0.0
     write_runtime_status(runtime_status)
@@ -2397,7 +2471,9 @@ def run(
                     dirty = True
                 elif state_changed and latest_active and show_bambu_page:
                     dirty = True
-            if bambu_active and now >= next_dashboard_switch:
+            if confirmation is not None:
+                next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+            if confirmation is None and bambu_active and now >= next_dashboard_switch:
                 show_bambu_page = not show_bambu_page
                 next_dashboard_switch = now + BAMBU_PAGE_SECONDS
                 dirty = True
@@ -2534,36 +2610,61 @@ def run(
 
             if now >= next_lock_state_check:
                 next_lock_state_check = now + 0.25
-                sessions_locked = raspberry_pi_locked() and windows_session_locked()
+                pi_locked = raspberry_pi_locked()
+                windows_locked = windows_session_locked()
                 activity = keyboard_activity_token()
                 unlock = keyboard_unlock_token()
-                if sessions_locked and not both_sessions_locked:
-                    # Ignore the key sequence that initiated locking. A new
-                    # key event after both sessions are locked wakes the LCD.
-                    last_keyboard_activity = activity
-                    last_keyboard_unlock = unlock
-                    sequence_unlock_active = False
-                    lock_wake_until = 0.0
-                elif sessions_locked:
+                if lock_cycle_active:
+                    session_unlocked = lock_cycle_session_unlocked(
+                        lock_cycle_pi_was_locked,
+                        lock_cycle_windows_was_locked,
+                        pi_locked,
+                        windows_locked,
+                    )
+                    if session_unlocked:
+                        lock_cycle_active = False
+                        sequence_unlock_active = False
+                        lock_wake_until = 0.0
+                        lock_standby_after = 0.0
+                    else:
+                        lock_cycle_pi_was_locked = (
+                            lock_cycle_pi_was_locked or pi_locked
+                        )
+                        lock_cycle_windows_was_locked = (
+                            lock_cycle_windows_was_locked or windows_locked
+                        )
                     if unlock and unlock != last_keyboard_unlock:
                         last_keyboard_unlock = unlock
-                        sequence_unlock_active = True
+                        # 0502 + Enter is the Windows unlock sequence. Treat it
+                        # as the end of this lock cycle immediately instead of
+                        # waiting for the Windows status callback.
+                        lock_cycle_active = False
+                        sequence_unlock_active = False
                         lock_wake_until = 0.0
+                        lock_standby_after = 0.0
                     elif activity and activity != last_keyboard_activity:
                         last_keyboard_activity = activity
-                        if not sequence_unlock_active:
+                        if lock_cycle_active:
                             lock_wake_until = now + LOCK_KEYBOARD_WAKE_SECONDS
-                elif not sessions_locked:
+                else:
                     last_keyboard_activity = activity
                     last_keyboard_unlock = unlock
                     sequence_unlock_active = False
                     lock_wake_until = 0.0
-                both_sessions_locked = sessions_locked
-                should_standby = (
-                    sessions_locked
-                    and not sequence_unlock_active
-                    and now >= lock_wake_until
+                should_standby, wake_reason = locked_display_policy(
+                    lock_cycle_active,
+                    sequence_unlock_active,
+                    lock_wake_until,
+                    now,
+                    lock_standby_after,
                 )
+                if confirmation is not None:
+                    should_standby, wake_reason = False, "codex_confirmation"
+                runtime_status["pi_locked"] = pi_locked
+                runtime_status["windows_locked"] = windows_locked
+                runtime_status["lock_cycle_active"] = lock_cycle_active
+                runtime_status["screen_standby"] = should_standby
+                runtime_status["lcd_wake_reason"] = wake_reason
                 if should_standby != screen_standby:
                     screen_standby = should_standby
                     display.set_standby(screen_standby)
@@ -2594,6 +2695,9 @@ def run(
                     )
                     if latest_confirmation:
                         runtime_status["last_confirmation_detected_at"] = event_time
+                        if screen_standby:
+                            screen_standby = False
+                            display.set_standby(False)
                     else:
                         runtime_status["last_confirmation_cleared_at"] = event_time
                     dirty = True
@@ -2782,29 +2886,60 @@ def run(
                 if now - last_lock_at >= LOCK_COOLDOWN_SECONDS:
                     last_lock_at = now
                     display.show(render_action("Locking", "Pi + Windows"))
+                    lock_errors: list[str] = []
+                    pi_locked = raspberry_pi_locked()
+                    # The Windows status file is event-driven and can retain a
+                    # stale `locked: true` after an unlock callback is missed.
+                    # Win+L is harmless on an already locked workstation, so
+                    # send it for every physical Lock press instead of letting
+                    # cached state suppress a required lock command.
                     windows_locked = False
                     try:
-                        result = bt_keyboard_request("lock_windows")
-                        if not result.get("ok"):
-                            raise RuntimeError(result.get("error", "unknown error"))
+                        request_windows_lock()
                         windows_locked = True
-                        set_windows_session_locked(True)
-                    except Exception:
-                        pass
-                    try:
-                        ensure_raspberry_pi_locked()
+                    except Exception as exc:
+                        lock_errors.append(f"Windows: {exc!r}")
+                    if not pi_locked:
+                        try:
+                            ensure_raspberry_pi_locked()
+                            pi_locked = raspberry_pi_locked()
+                        except Exception as exc:
+                            lock_errors.append(f"Pi: {exc!r}")
+                    lock_cycle_active = pi_locked or windows_locked
+                    lock_cycle_pi_was_locked = pi_locked
+                    lock_cycle_windows_was_locked = windows_locked
+                    last_keyboard_activity = keyboard_activity_token()
+                    last_keyboard_unlock = keyboard_unlock_token()
+                    sequence_unlock_active = False
+                    lock_wake_until = 0.0
+                    runtime_status["last_lock_error"] = "; ".join(lock_errors)
+                    runtime_status["pi_locked"] = pi_locked
+                    runtime_status["windows_locked"] = windows_locked
+                    runtime_status["lock_cycle_active"] = lock_cycle_active
+                    if lock_cycle_active:
+                        detail = (
+                            "Pi + Windows" if pi_locked and windows_locked
+                            else "Pi Only" if pi_locked
+                            else "Windows Only"
+                        )
                         overlay = render_action(
                             "Locked",
-                            "Pi + Windows" if windows_locked else "Pi Only",
-                            failed=not windows_locked,
+                            detail,
+                            failed=not (pi_locked and windows_locked),
                         )
-                    except Exception:
+                        lock_feedback_overlay = overlay
+                    else:
                         overlay = render_action(
                             "Lock Failed",
-                            "Windows Locked" if windows_locked else "Check Desktop",
+                            "Check Desktop",
                             failed=True,
                         )
                     overlay_until = time.monotonic() + 2.5
+                    # Keep the successful Locked result visible first. Once
+                    # its normal feedback duration ends, the lock-state policy
+                    # writes a black frame and puts the controller to sleep.
+                    if lock_cycle_active:
+                        lock_standby_after = overlay_until
                     dirty = True
 
             if tun_toggle_pressed.is_set():
@@ -2926,6 +3061,7 @@ def run(
                             dirty = True
 
             if overlay is not None and time.monotonic() >= overlay_until:
+                expired_overlay = overlay
                 if queued_overlay is not None and overlay is queued_overlay_after:
                     overlay = queued_overlay
                     overlay_until = time.monotonic() + queued_overlay_duration
@@ -2937,7 +3073,29 @@ def run(
                     queued_overlay = None
                     queued_overlay_after = None
                     queued_overlay_duration = 0.0
-                dirty = True
+                if expired_overlay is lock_feedback_overlay:
+                    lock_feedback_overlay = None
+                    should_standby, wake_reason = locked_display_policy(
+                        lock_cycle_active,
+                        sequence_unlock_active,
+                        lock_wake_until,
+                        time.monotonic(),
+                        lock_standby_after,
+                    )
+                    if should_standby and confirmation is None:
+                        # End Locked -> black/sleep atomically. Do not mark the
+                        # base dashboard dirty in between, otherwise one Codex
+                        # Usage frame can be transferred before the 250 ms lock
+                        # poll notices that the standby deadline has elapsed.
+                        screen_standby = True
+                        display.set_standby(True)
+                        runtime_status["screen_standby"] = True
+                        runtime_status["lcd_wake_reason"] = wake_reason
+                        dirty = False
+                    else:
+                        dirty = True
+                else:
+                    dirty = True
             if now >= next_pixel_shift:
                 next_pixel_shift = now + PIXEL_SHIFT_SECONDS
                 pixel_shift_index = (pixel_shift_index + 1) % len(PIXEL_SHIFT_OFFSETS)
@@ -2949,7 +3107,7 @@ def run(
             if quota_animation_active and overlay is None and confirmation is None:
                 dirty = True
             if dirty:
-                if overlay is None and confirmation is not None:
+                if confirmation is not None:
                     runtime_status["last_confirmation_rendered_at"] = (
                         datetime.now().astimezone().isoformat(timespec="seconds")
                     )
@@ -2966,8 +3124,8 @@ def run(
                     )
                 )
                 display.show(
-                    overlay if overlay is not None
-                    else render_confirmation(confirmation) if confirmation is not None
+                    render_confirmation(confirmation) if confirmation is not None
+                    else overlay if overlay is not None
                     else shift_frame(
                         base_page,
                         PIXEL_SHIFT_OFFSETS[pixel_shift_index],
@@ -2991,8 +3149,8 @@ def run(
                     )
                 )
                 display.show(
-                    overlay if overlay is not None
-                    else render_confirmation(confirmation) if confirmation is not None
+                    render_confirmation(confirmation) if confirmation is not None
+                    else overlay if overlay is not None
                     else shift_frame(
                         base_page,
                         PIXEL_SHIFT_OFFSETS[pixel_shift_index],
