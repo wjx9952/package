@@ -109,7 +109,7 @@ PI_LOCK_START_TIMEOUT_SECONDS = 1.0
 PI_LOCK_START_CHECK_SECONDS = 0.05
 JOYSTICK_RESTART_HOLD_SECONDS = 5.0
 JOYSTICK_STARTUP_RELEASE_SECONDS = 0.5
-LCD_BUILD_ID = "2026-10-14-approval-dot-centered"
+LCD_BUILD_ID = "2026-10-16-lock-unlock-token-baseline"
 LCD_RUNTIME_STATUS_FILE = Path("/tmp/codex-lcd-hat-status.json")
 
 CODEX_APPROVE_LABELS = {
@@ -2885,6 +2885,12 @@ def run(
                 lock_pressed.clear()
                 if now - last_lock_at >= LOCK_COOLDOWN_SECONDS:
                     last_lock_at = now
+                    # Snapshot input tokens before either lock request. The
+                    # lock operations can take about a second; sampling after
+                    # them could absorb a fast 0502 + Enter event as the new
+                    # baseline and leave only the temporary 10-second wake.
+                    lock_start_activity = keyboard_activity_token()
+                    lock_start_unlock = keyboard_unlock_token()
                     display.show(render_action("Locking", "Pi + Windows"))
                     lock_errors: list[str] = []
                     pi_locked = raspberry_pi_locked()
@@ -2908,8 +2914,8 @@ def run(
                     lock_cycle_active = pi_locked or windows_locked
                     lock_cycle_pi_was_locked = pi_locked
                     lock_cycle_windows_was_locked = windows_locked
-                    last_keyboard_activity = keyboard_activity_token()
-                    last_keyboard_unlock = keyboard_unlock_token()
+                    last_keyboard_activity = lock_start_activity
+                    last_keyboard_unlock = lock_start_unlock
                     sequence_unlock_active = False
                     lock_wake_until = 0.0
                     runtime_status["last_lock_error"] = "; ".join(lock_errors)

@@ -908,7 +908,9 @@ class CodexRGBApp:
     @staticmethod
     def bt_request(command: str) -> dict:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(4)
+            # The daemon serializes some BlueZ queries on GLib's main loop and
+            # permits up to eight seconds, so the client must wait slightly longer.
+            client.settimeout(10)
             client.connect(BT_KEYBOARD_SOCKET)
             client.sendall(json.dumps({"command": command}).encode("utf-8"))
             data = b""

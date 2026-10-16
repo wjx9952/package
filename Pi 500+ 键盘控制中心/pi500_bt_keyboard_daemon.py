@@ -42,6 +42,7 @@ APP_PATH = "/com/pi500/blekeyboard"
 SOCKET_PATH = "/run/pi500-bt-keyboard/control.sock"
 ACTIVITY_PATH = "/run/pi500-bt-keyboard/activity"
 UNLOCK_SEQUENCE_PATH = "/run/pi500-bt-keyboard/unlock-sequence"
+KEYBOARD_HOSTS_PATH = "/var/lib/pi500-bt-keyboard/keyboard-hosts.json"
 UNLOCK_SEQUENCE = "0502"
 UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 8.0
 KEYBOARD_NAME = "Raspberry Pi Ltd Pi 500+ Keyboard (ANSI)"
@@ -439,11 +440,15 @@ class PairingAgent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
         self.require_allowed(device)
+        if self.state.pairing:
+            self.state.remember_keyboard_device(device)
         return "0000"
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
         self.require_allowed(device)
+        if self.state.pairing:
+            self.state.remember_keyboard_device(device)
         return dbus.UInt32(0)
 
     @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
@@ -457,14 +462,20 @@ class PairingAgent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         self.require_allowed(device)
+        if self.state.pairing:
+            self.state.remember_keyboard_device(device)
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
         self.require_allowed(device)
+        if self.state.pairing:
+            self.state.remember_keyboard_device(device)
 
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
         self.require_allowed(device)
+        if str(uuid).lower() == HID_SERVICE_UUID:
+            self.state.remember_keyboard_device(device)
         try:
             obj = self.state.bus.get_object(BLUEZ, device)
             dbus.Interface(obj, PROP_IFACE).Set(
@@ -553,6 +564,7 @@ class State:
         self.capture_fd = None
         self.local_caps_lock = False
         self.pairing_source = None
+        self.keyboard_hosts = self.load_keyboard_hosts()
         self.activity_write_lock = threading.Lock()
         self.unlock_sequence_buffer = ""
         self.unlock_sequence_last_at = 0.0
@@ -561,6 +573,68 @@ class State:
             daemon=True,
         )
         self.activity_thread.start()
+
+    @staticmethod
+    def load_keyboard_hosts():
+        try:
+            with open(KEYBOARD_HOSTS_PATH, "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            return {str(item).upper() for item in value if item}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return set()
+
+    def save_keyboard_hosts(self):
+        try:
+            directory = os.path.dirname(KEYBOARD_HOSTS_PATH)
+            os.makedirs(directory, mode=0o755, exist_ok=True)
+            temporary = KEYBOARD_HOSTS_PATH + f".{os.getpid()}.tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(sorted(self.keyboard_hosts), handle, ensure_ascii=False)
+                handle.write("\n")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, KEYBOARD_HOSTS_PATH)
+        except OSError:
+            pass
+
+    @staticmethod
+    def device_identity(path, device):
+        return str(device.get("Address") or path).upper()
+
+    @staticmethod
+    def device_can_host_keyboard(device):
+        """Exclude mice/keyboards that connect *to* Pi instead of hosting it."""
+        icon = str(device.get("Icon", "")).lower()
+        return not icon.startswith("input-")
+
+    def remember_keyboard_device(self, path):
+        try:
+            objects = dbus.Interface(self.bus.get_object(BLUEZ, "/"),
+                                     OM_IFACE).GetManagedObjects()
+            device = objects.get(path, {}).get(DEVICE_IFACE)
+            if not device:
+                return
+            identity = self.device_identity(path, device)
+            if identity not in self.keyboard_hosts:
+                self.keyboard_hosts.add(identity)
+                self.save_keyboard_hosts()
+        except Exception:
+            pass
+
+    def migrate_connected_keyboard_host(self, objects):
+        """Seed older installations from the host using our HID notifications."""
+        if self.keyboard_hosts or not self.connected:
+            return
+        for path, interfaces in objects.items():
+            device = interfaces.get(DEVICE_IFACE)
+            if not device or not bool(device.get("Paired", False)):
+                continue
+            if (
+                bool(device.get("Connected", False))
+                and self.device_can_host_keyboard(device)
+            ):
+                self.keyboard_hosts.add(self.device_identity(path, device))
+        if self.keyboard_hosts:
+            self.save_keyboard_hosts()
 
     def note_keyboard_activity(self):
         """Publish a monotonically changing token readable by desktop services."""
@@ -676,9 +750,24 @@ class State:
         result = []
         objects = dbus.Interface(self.bus.get_object(BLUEZ, "/"),
                                  OM_IFACE).GetManagedObjects()
+        self.migrate_connected_keyboard_host(objects)
+        registry_changed = False
         for path, interfaces in objects.items():
             dev = interfaces.get(DEVICE_IFACE)
-            if dev and bool(dev.get("Paired", False)):
+            identity = self.device_identity(path, dev) if dev else ""
+            if (
+                dev
+                and identity in self.keyboard_hosts
+                and not self.device_can_host_keyboard(dev)
+            ):
+                self.keyboard_hosts.discard(identity)
+                registry_changed = True
+                continue
+            if (
+                dev
+                and bool(dev.get("Paired", False))
+                and identity in self.keyboard_hosts
+            ):
                 if not bool(dev.get("Trusted", False)):
                     try:
                         obj = self.bus.get_object(BLUEZ, path)
@@ -687,12 +776,21 @@ class State:
                     except Exception:
                         pass
                 result.append(str(dev.get("Alias", dev.get("Name", path))))
+        if registry_changed:
+            self.save_keyboard_hosts()
         return result
 
     def refresh_connection(self):
         was_connected = self.connected
         self.connected = any(chrc.notifying
                              for chrc in self.input_characteristics)
+        if self.connected:
+            try:
+                objects = dbus.Interface(self.bus.get_object(BLUEZ, "/"),
+                                         OM_IFACE).GetManagedObjects()
+                self.migrate_connected_keyboard_host(objects)
+            except Exception:
+                pass
         if was_connected and not self.connected:
             self.caps_lock = None
             self.stop_capture("Windows 已断开")
@@ -735,10 +833,16 @@ class State:
         removed = []
         for path, interfaces in list(objects.items()):
             dev = interfaces.get(DEVICE_IFACE)
-            if not dev or not bool(dev.get("Paired", False)):
+            if (
+                not dev
+                or not bool(dev.get("Paired", False))
+                or self.device_identity(path, dev) not in self.keyboard_hosts
+            ):
                 continue
             removed.append(str(dev.get("Alias", dev.get("Name", path))))
             adapter.RemoveDevice(dbus.ObjectPath(path))
+            self.keyboard_hosts.discard(self.device_identity(path, dev))
+        self.save_keyboard_hosts()
         self.connected = False
         self.caps_lock = None
         self.disable_pairing()
@@ -926,7 +1030,14 @@ class ControlServer(threading.Thread):
                     response = self.dispatch(request.get("command", ""))
                 except Exception as exc:
                     response = {"ok": False, "error": str(exc)}
-                conn.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode())
+                try:
+                    conn.sendall(
+                        (json.dumps(response, ensure_ascii=False) + "\n").encode()
+                    )
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    # A GUI poll may time out or close while a BlueZ request is
+                    # still finishing. Keep the server alive for later clients.
+                    pass
 
 
 def make_application(bus):
