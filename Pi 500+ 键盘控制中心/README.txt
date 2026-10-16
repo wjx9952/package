@@ -1,7 +1,7 @@
 Pi 500+ 键盘控制中心
 ====================
 
-当前版本：1.1.50-portable
+当前版本：1.2.32-portable
 
 每次功能新增、修复或行为调整时，必须同步更新 VERSION 和 CHANGELOG.md，
 写明版本号、日期以及本次更新内容，再提交到 GitHub。
@@ -44,8 +44,9 @@ Windows Caps Lock 开启会让物理 Caps Lock 键稍亮；Codex 处理、确认
 正常额度页面每 45 秒按右、下、左、上循环位移 1 像素，分散静态文字和边框长期停留
 在同一像素上的风险；确认页面和临时操作提示保持原位。服务退出或重启时会先写入纯黑
 帧，再执行 Display Off 和 Sleep In，最后才释放背光、SPI 与 GPIO。
-配置 Bambu H2D 局域网 MQTT 后，打印机工作、暂停、报错或刚完成时，小屏幕每 8 秒
-在 Codex Usage 和 Bambu Status 之间轮换。Bambu 页显示英文状态、AMS 材质与颜色、打印进度、
+配置 Bambu H2D 局域网 MQTT 后，打印、暂停或错误期间，小屏幕会在 Codex Usage 和
+Bambu Monitor 之间固定每 10 秒轮换；打印完成后继续轮播 1 小时，超过 1 小时且没有
+新任务时停止轮播。打印完成状态保留 30 分钟，之后转为空闲蓝色。打印机页面显示英文状态、AMS 材质与颜色、打印进度、
 层数、喷头和热床温度以及预计完成时间。访问码只保存在
 `~/.config/pi500-keyboard-control-center/bambu.json`，不会提交到 GitHub。
 状态颜色按钮和选择窗口会显示各灯效对应的图案或纯色色块。

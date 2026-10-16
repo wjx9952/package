@@ -68,6 +68,7 @@ class BambuStatusTests(unittest.TestCase):
 
     def test_state_colours_match_the_confirmed_design(self) -> None:
         for raw, label, colour in (
+            ("IDLE", "IDLE", (47, 128, 237)),
             ("RUNNING", "PRINTING", (255, 149, 0)),
             ("PAUSE", "PAUSED", (255, 69, 58)),
             ("FAILED", "ERROR", (255, 69, 58)),
@@ -78,16 +79,56 @@ class BambuStatusTests(unittest.TestCase):
             )
             self.assertEqual((status["status"], status["status_colour"]), (label, colour))
 
+    def test_user_facing_printer_status_labels(self) -> None:
+        self.assertEqual(dashboard._bambu_display_status("IDLE"), "Idle")
+        self.assertEqual(dashboard._bambu_display_status("PRINTING"), "Printing")
+        self.assertEqual(dashboard._bambu_display_status("PAUSED"), "Paused")
+        self.assertEqual(dashboard._bambu_display_status("ERROR"), "Error")
+        self.assertEqual(dashboard._bambu_display_status("COMPLETED"), "Completed")
+        self.assertEqual(dashboard.NOZZLE_LABEL_GAP, 5)
+
     def test_stale_active_state_becomes_error(self) -> None:
         status = dashboard.bambu_status_from_payload(sample_payload(), now=1_100.1)
         self.assertEqual(status["status"], "ERROR")
 
-    def test_completed_page_expires_after_ten_minutes(self) -> None:
-        status = dashboard.bambu_status_from_payload(
-            sample_payload("FINISH"), now=1_001.0
+    def test_printer_page_is_active_during_work_and_one_hour_after_finish(self) -> None:
+        printing = dashboard.bambu_status_from_payload(
+            sample_payload("RUNNING"), now=1_001.0
         )
-        self.assertTrue(dashboard.bambu_page_active(status, now=1_594.0))
-        self.assertFalse(dashboard.bambu_page_active(status, now=1_596.0))
+        self.assertTrue(dashboard.bambu_page_active(printing, now=99_999.0))
+        payload = sample_payload("FINISH")
+        payload["status_changed_at"] = 1_000.0
+        completed = dashboard.bambu_status_from_payload(payload, now=1_001.0)
+        self.assertTrue(dashboard.bambu_page_active(completed, now=4_600.0))
+        self.assertFalse(dashboard.bambu_page_active(completed, now=4_600.1))
+        self.assertFalse(dashboard.bambu_page_active(None, now=4_600.1))
+        self.assertEqual(dashboard.DASHBOARD_PAGE_SECONDS, 10.0)
+
+    def test_idle_printer_does_not_participate_in_carousel(self) -> None:
+        idle = dashboard.bambu_status_from_payload(
+            sample_payload("IDLE"), now=1_001.0
+        )
+        self.assertFalse(dashboard.bambu_page_active(idle, now=1_001.0))
+
+    def test_missing_printer_data_has_offline_page(self) -> None:
+        status = dashboard.bambu_status_for_display(None)
+        self.assertEqual(status["status"], "ERROR")
+        self.assertEqual(status["status_colour"], (255, 69, 58))
+        self.assertEqual(status["job_name"], "Printer Offline")
+
+    def test_completed_job_becomes_idle_after_thirty_minutes(self) -> None:
+        payload = sample_payload("FINISH")
+        payload["status_changed_at"] = 1_000.0
+        completed = dashboard.bambu_status_from_payload(payload, now=2_800.0)
+        idle = dashboard.bambu_status_from_payload(payload, now=2_800.1)
+        self.assertEqual(
+            (completed["status"], completed["status_colour"]),
+            ("COMPLETED", (52, 199, 89)),
+        )
+        self.assertEqual(
+            (idle["status"], idle["status_colour"]),
+            ("IDLE", (47, 128, 237)),
+        )
 
     def test_bambu_page_renders_at_lcd_resolution(self) -> None:
         status = dashboard.bambu_status_from_payload(sample_payload(), now=1_001.0)

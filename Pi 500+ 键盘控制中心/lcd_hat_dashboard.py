@@ -86,8 +86,10 @@ BAMBU_CAMERA_FRAME_FILE = Path(
 )
 BAMBU_STATE_CHECK_SECONDS = 1.0
 BAMBU_STATE_STALE_SECONDS = 90.0
-BAMBU_PAGE_SECONDS = 8.0
-BAMBU_COMPLETED_DISPLAY_SECONDS = 10 * 60
+BAMBU_COMPLETED_TO_IDLE_SECONDS = 30 * 60
+BAMBU_COMPLETED_CAROUSEL_SECONDS = 60 * 60
+DASHBOARD_PAGE_SECONDS = 10.0
+NOZZLE_LABEL_GAP = 5
 NETWORK_CHECK_SECONDS = 5
 NETWORK_FAILURE_THRESHOLD = 2
 HTTP_TIMEOUT_SECONDS = 30
@@ -1474,7 +1476,18 @@ def _bambu_status_label(raw_status: object, connected: bool = True) -> tuple[str
         return "ERROR", (255, 69, 58)
     if status in {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}:
         return "COMPLETED", (52, 199, 89)
-    return "IDLE", (142, 142, 147)
+    return "IDLE", (47, 128, 237)
+
+
+def _bambu_display_status(status: object) -> str:
+    """Return the user-facing English printer status label."""
+    return {
+        "IDLE": "Idle",
+        "PRINTING": "Printing",
+        "PAUSED": "Paused",
+        "ERROR": "Error",
+        "COMPLETED": "Completed",
+    }.get(str(status or "").strip().upper(), "Idle")
 
 
 def bambu_status_from_payload(
@@ -1493,6 +1506,12 @@ def bambu_status_from_payload(
     connected = bool(payload.get("connected", True))
     raw_status = print_data.get("gcode_state") or print_data.get("state")
     status, status_colour = _bambu_status_label(raw_status, connected)
+    if (
+        status == "COMPLETED"
+        and changed_at > 0
+        and epoch_now - changed_at > BAMBU_COMPLETED_TO_IDLE_SECONDS
+    ):
+        status, status_colour = "IDLE", (47, 128, 237)
     if (
         status not in {"IDLE", "COMPLETED"}
         and updated_at > 0
@@ -1566,16 +1585,42 @@ def load_bambu_status(
 
 
 def bambu_page_active(status: dict | None, *, now: float | None = None) -> bool:
+    """Show the printer page while active and for one hour after completion."""
     if not status:
         return False
-    label = str(status.get("status", ""))
+    label = str(status.get("status", "")).strip().upper()
     if label in {"PRINTING", "PAUSED", "ERROR"}:
         return True
-    if label != "COMPLETED":
+    raw_status = str(status.get("raw_status", "")).strip().upper()
+    if raw_status not in {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}:
         return False
     epoch_now = time.time() if now is None else now
     changed_at = _number(status.get("status_changed_at"))
-    return changed_at > 0 and epoch_now - changed_at <= BAMBU_COMPLETED_DISPLAY_SECONDS
+    return (
+        changed_at > 0
+        and epoch_now - changed_at <= BAMBU_COMPLETED_CAROUSEL_SECONDS
+    )
+
+
+def bambu_status_for_display(status: dict | None) -> dict:
+    """Supply a stable offline page while printer telemetry is unavailable."""
+    if status is not None:
+        return status
+    return {
+        "connected": False,
+        "printer_ip": "--",
+        "updated_at": 0,
+        "status": "ERROR",
+        "status_colour": (255, 69, 58),
+        "job_name": "Printer Offline",
+        "material": "Filament",
+        "colour_name": "--",
+        "percent": 0,
+        "layer": 0,
+        "total_layers": 0,
+        "remaining_minutes": 0,
+        "finish_time": "--:--",
+    }
 
 
 def shift_frame(image: Image.Image, offset: tuple[int, int]) -> Image.Image:
@@ -1880,10 +1925,10 @@ def render_bambu_status(
     *,
     camera_frame_path: Path = BAMBU_CAMERA_FRAME_FILE,
 ) -> Image.Image:
-    """Render the compact Bambu page using the Codex Usage type hierarchy."""
+    """Render the compact 3D printer page using the Codex Usage type hierarchy."""
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     draw = SmoothDraw(image)
-    title = "Bambu Status"
+    title = "Bambu Monitor"
     title_width = draw.textlength(title, font=F_TITLE)
     draw.text(((WIDTH - title_width) // 2, 2), title, font=F_TITLE, fill=(250, 250, 252))
 
@@ -1908,7 +1953,9 @@ def render_bambu_status(
 
     status_colour = tuple(status.get("status_colour", (255, 149, 0)))
     draw_status_dot(image, (10, 46, 18, 54), status_colour)
-    draw.text((23, 44), str(status.get("status", "IDLE")), font=F_META, fill=(250, 250, 252))
+    printer_status = "Printer Status: " + _bambu_display_status(status.get("status"))
+    printer_status = _fit_lcd_text(draw, printer_status, F_META, WIDTH - 31)
+    draw.text((23, 44), printer_status, font=F_META, fill=(250, 250, 252))
 
     # Use visible glyph bounds: font ascent must not change row spacing.
     def label(x, y, value, size, *, bold=False, muted=False, right=False, accent=False):
@@ -1933,11 +1980,17 @@ def render_bambu_status(
             + ("--" if target is None else str(int(target))) + "°C"
         )
 
+    def nozzle_heading(x, y, side):
+        face = cjk_font(8)
+        label(x, y, side, 8, muted=True)
+        side_width = draw.textlength(side, font=face)
+        label(x + side_width + NOZZLE_LABEL_GAP, y, "Nozzle", 8, muted=True)
+
     card((7, 59, 116, 91), 12)
     card((123, 59, 233, 91), 12)
-    label(15, 64, "Left nozzle", 8, muted=True)
+    nozzle_heading(15, 64, "Left")
     label(108, 76, temperature("nozzle_left"), 11, bold=True, right=True)
-    label(131, 64, "Right nozzle", 8, muted=True)
+    nozzle_heading(131, 64, "Right")
     label(225, 76, temperature("nozzle_right"), 11, bold=True, right=True)
     # Five clear pixel rows between each pair of vertically stacked cards.
     card((7, 97, 233, 124), 12)
@@ -2461,21 +2514,19 @@ def run(
                 if latest_active != bambu_active:
                     bambu_active = latest_active
                     show_bambu_page = latest_active
-                    next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                    next_dashboard_switch = now + DASHBOARD_PAGE_SECONDS
                     dirty = True
                 elif latest_active and status_changed:
-                    # Important state changes (pause, error, completion) should
-                    # be visible immediately instead of waiting for the next turn.
                     show_bambu_page = True
-                    next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                    next_dashboard_switch = now + DASHBOARD_PAGE_SECONDS
                     dirty = True
                 elif state_changed and latest_active and show_bambu_page:
                     dirty = True
             if confirmation is not None:
-                next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                next_dashboard_switch = now + DASHBOARD_PAGE_SECONDS
             if confirmation is None and bambu_active and now >= next_dashboard_switch:
                 show_bambu_page = not show_bambu_page
-                next_dashboard_switch = now + BAMBU_PAGE_SECONDS
+                next_dashboard_switch = now + DASHBOARD_PAGE_SECONDS
                 dirty = True
             if now >= next_network_check and not network_state["checking"]:
                 network_state["checking"] = True
@@ -3118,8 +3169,8 @@ def run(
                         datetime.now().astimezone().isoformat(timespec="seconds")
                     )
                 base_page = (
-                    render_bambu_status(bambu_status)
-                    if bambu_active and show_bambu_page and bambu_status is not None
+                    render_bambu_status(bambu_status_for_display(bambu_status))
+                    if bambu_active and show_bambu_page
                     else render(
                         display_data,
                         network_online=network_online,
@@ -3143,8 +3194,8 @@ def run(
                 # fail when the panel is absent, so this is also our hot-plug
                 # recovery mechanism.
                 base_page = (
-                    render_bambu_status(bambu_status)
-                    if bambu_active and show_bambu_page and bambu_status is not None
+                    render_bambu_status(bambu_status_for_display(bambu_status))
+                    if bambu_active and show_bambu_page
                     else render(
                         display_data,
                         network_online=network_online,
