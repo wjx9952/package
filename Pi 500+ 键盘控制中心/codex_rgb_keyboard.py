@@ -50,6 +50,7 @@ TRANSITION_STEP_SECONDS = 0.018
 KEYBOARD_TOOL = "/usr/bin/rpi-keyboard-config"
 FIRMWARE_TOOL = "/usr/bin/rpi-keyboard-fw-update"
 SETTINGS_FILE = APP_DIR / "settings.json"
+VERSION_FILE = APP_DIR / "VERSION"
 RUNTIME_STATUS_FILE = Path("/tmp/codex-rgb-keyboard-status.json")
 BT_KEYBOARD_SOCKET = "/run/pi500-bt-keyboard/control.sock"
 KEYBOARD_ACTIVITY_FILE = Path("/run/pi500-bt-keyboard/activity")
@@ -84,6 +85,20 @@ DEFAULT_EFFECT_COLORS = {
     "keyboard_mode": DEFAULT_STATE_COLORS["keyboard_mode"],
     "idle": DEFAULT_STATE_COLORS["idle"],
 }
+
+
+def read_app_version() -> str:
+    try:
+        version = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return version.removesuffix("-portable")
+
+
+APP_VERSION = read_app_version()
+WINDOW_TITLE = "Pi 500+ 键盘控制中心"
+if APP_VERSION:
+    WINDOW_TITLE = f"{WINDOW_TITLE} {APP_VERSION}"
 
 
 
@@ -509,7 +524,7 @@ class CodexRGBApp:
             for state, value in state_brightness.items()
         }
 
-        root.title("Pi 500+ 键盘控制中心")
+        root.title(WINDOW_TITLE)
         root.resizable(False, False)
         root.configure(bg=WINDOW_BG)
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)

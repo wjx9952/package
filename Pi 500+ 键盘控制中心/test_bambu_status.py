@@ -2,6 +2,8 @@
 """Unit tests for Bambu MQTT state parsing and the LCD page."""
 
 import unittest
+from datetime import datetime
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -13,6 +15,7 @@ import lcd_hat_dashboard as dashboard
 
 def sample_payload(state: str = "RUNNING") -> dict:
     return {
+        "status_tracking_version": 2,
         "connected": True,
         "printer_ip": "192.168.1.88",
         "updated_at": 1_000.0,
@@ -87,6 +90,12 @@ class BambuStatusTests(unittest.TestCase):
         self.assertEqual(dashboard._bambu_display_status("COMPLETED"), "Completed")
         self.assertEqual(dashboard.NOZZLE_LABEL_GAP, 5)
 
+    def test_tun_label_waits_for_real_network_check(self) -> None:
+        self.assertEqual(dashboard.tun_status_label(True, False, False), "--")
+        self.assertEqual(dashboard.tun_status_label(False, False, True), "OFF")
+        self.assertEqual(dashboard.tun_status_label(True, True, True), "ON")
+        self.assertEqual(dashboard.tun_status_label(True, False, True), "ERR")
+
     def test_stale_active_state_becomes_error(self) -> None:
         status = dashboard.bambu_status_from_payload(sample_payload(), now=1_100.1)
         self.assertEqual(status["status"], "ERROR")
@@ -103,6 +112,14 @@ class BambuStatusTests(unittest.TestCase):
         self.assertFalse(dashboard.bambu_page_active(completed, now=4_600.1))
         self.assertFalse(dashboard.bambu_page_active(None, now=4_600.1))
         self.assertEqual(dashboard.DASHBOARD_PAGE_SECONDS, 10.0)
+
+    def test_disconnected_completed_job_does_not_extend_carousel_forever(self) -> None:
+        payload = sample_payload("FINISH")
+        payload["connected"] = False
+        payload["status_changed_at"] = 1_000.0
+        completed = dashboard.bambu_status_from_payload(payload, now=4_601.0)
+        self.assertEqual(completed["status"], "ERROR")
+        self.assertFalse(dashboard.bambu_page_active(completed, now=4_601.0))
 
     def test_idle_printer_does_not_participate_in_carousel(self) -> None:
         idle = dashboard.bambu_status_from_payload(
@@ -129,6 +146,46 @@ class BambuStatusTests(unittest.TestCase):
             (idle["status"], idle["status_colour"]),
             ("IDLE", (47, 128, 237)),
         )
+
+    def test_completed_job_uses_real_status_change_as_finish_time(self) -> None:
+        payload = sample_payload("FINISH")
+        payload["status_changed_at"] = 1_000.0
+        status = dashboard.bambu_status_from_payload(payload, now=9_999.0)
+        expected = datetime.fromtimestamp(1_000.0).astimezone().strftime("%H:%M")
+        self.assertEqual(status["finish_time"], expected)
+
+    def test_monitor_restores_completion_time_across_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            state_file = Path(directory) / "bambu-state.json"
+            state_file.write_text(json.dumps({
+                "status_tracking_version": 2,
+                "status_changed_at": 1_234.0,
+                "print": {"gcode_state": "FINISH", "mc_percent": 100},
+            }), encoding="utf-8")
+            raw_state, gcode_state, changed_at = monitor.load_previous_state(
+                state_file, now=9_999.0
+            )
+        self.assertEqual(raw_state["print"]["mc_percent"], 100)
+        self.assertEqual(gcode_state, "FINISH")
+        self.assertEqual(changed_at, 1_234.0)
+
+    def test_legacy_finished_snapshot_does_not_fabricate_completion_time(self) -> None:
+        payload = sample_payload("FINISH")
+        payload.pop("status_tracking_version")
+        payload["status_changed_at"] = 9_000.0
+        status = dashboard.bambu_status_from_payload(payload, now=9_100.0)
+        self.assertEqual(status["status"], "IDLE")
+        self.assertEqual(status["finish_time"], "--:--")
+        self.assertFalse(dashboard.bambu_page_active(status, now=9_100.0))
+
+        with TemporaryDirectory() as directory:
+            state_file = Path(directory) / "legacy-state.json"
+            state_file.write_text(json.dumps(payload), encoding="utf-8")
+            _, gcode_state, changed_at = monitor.load_previous_state(
+                state_file, now=9_100.0
+            )
+        self.assertEqual(gcode_state, "FINISH")
+        self.assertEqual(changed_at, 0)
 
     def test_bambu_page_renders_at_lcd_resolution(self) -> None:
         status = dashboard.bambu_status_from_payload(sample_payload(), now=1_001.0)

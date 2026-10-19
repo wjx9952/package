@@ -90,6 +90,10 @@ BAMBU_COMPLETED_TO_IDLE_SECONDS = 30 * 60
 BAMBU_COMPLETED_CAROUSEL_SECONDS = 60 * 60
 DASHBOARD_PAGE_SECONDS = 10.0
 NOZZLE_LABEL_GAP = 5
+BAMBU_ACTIVE_STATES = {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "SLICING", "PAUSE", "PAUSED"}
+BAMBU_ERROR_STATES = {"FAILED", "FAIL", "ERROR", "FAULT", "CANCEL", "CANCELLED"}
+BAMBU_COMPLETED_STATES = {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}
+BAMBU_STATUS_TRACKING_VERSION = 2
 NETWORK_CHECK_SECONDS = 5
 NETWORK_FAILURE_THRESHOLD = 2
 HTTP_TIMEOUT_SECONDS = 30
@@ -1472,9 +1476,9 @@ def _bambu_status_label(raw_status: object, connected: bool = True) -> tuple[str
         return "PRINTING", (255, 149, 0)
     if status in {"PAUSE", "PAUSED"}:
         return "PAUSED", (255, 69, 58)
-    if status in {"FAILED", "FAIL", "ERROR", "FAULT", "CANCEL", "CANCELLED"}:
+    if status in BAMBU_ERROR_STATES:
         return "ERROR", (255, 69, 58)
-    if status in {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}:
+    if status in BAMBU_COMPLETED_STATES:
         return "COMPLETED", (52, 199, 89)
     return "IDLE", (47, 128, 237)
 
@@ -1502,14 +1506,18 @@ def bambu_status_from_payload(
         return None
     epoch_now = time.time() if now is None else now
     updated_at = _number(payload.get("updated_at"), source_mtime)
-    changed_at = _number(payload.get("status_changed_at"), updated_at)
+    tracking_version = round(_number(payload.get("status_tracking_version")))
+    changed_at = (
+        _number(payload.get("status_changed_at"))
+        if tracking_version >= BAMBU_STATUS_TRACKING_VERSION
+        else 0.0
+    )
     connected = bool(payload.get("connected", True))
     raw_status = print_data.get("gcode_state") or print_data.get("state")
     status, status_colour = _bambu_status_label(raw_status, connected)
-    if (
-        status == "COMPLETED"
-        and changed_at > 0
-        and epoch_now - changed_at > BAMBU_COMPLETED_TO_IDLE_SECONDS
+    if status == "COMPLETED" and (
+        changed_at <= 0
+        or epoch_now - changed_at > BAMBU_COMPLETED_TO_IDLE_SECONDS
     ):
         status, status_colour = "IDLE", (47, 128, 237)
     if (
@@ -1526,7 +1534,18 @@ def bambu_status_from_payload(
             print_data.get("mc_remaining_time", print_data.get("remain_time", 0))
         )),
     )
-    finish_at = datetime.fromtimestamp(epoch_now + remaining_minutes * 60).astimezone()
+    raw_status_key = str(raw_status or "").strip().upper()
+    if raw_status_key in BAMBU_COMPLETED_STATES:
+        finish_time = (
+            datetime.fromtimestamp(changed_at).astimezone().strftime("%H:%M")
+            if changed_at > 0 else "--:--"
+        )
+    elif status == "IDLE":
+        finish_time = "--:--"
+    else:
+        finish_time = datetime.fromtimestamp(
+            epoch_now + remaining_minutes * 60
+        ).astimezone().strftime("%H:%M")
     nozzle_temperatures = {}
     device = print_data.get("device") or {}
     extruder = device.get("extruder") or {}
@@ -1562,7 +1581,7 @@ def bambu_status_from_payload(
         "bed": round(_number(print_data.get("bed_temper"))),
         "bed_target": round(_number(print_data.get("bed_target_temper"))),
         "remaining_minutes": remaining_minutes,
-        "finish_time": finish_at.strftime("%H:%M"),
+        "finish_time": finish_time,
         "material": material,
         "colour_name": colour_name,
         "filament_colour": filament_colour,
@@ -1588,11 +1607,10 @@ def bambu_page_active(status: dict | None, *, now: float | None = None) -> bool:
     """Show the printer page while active and for one hour after completion."""
     if not status:
         return False
-    label = str(status.get("status", "")).strip().upper()
-    if label in {"PRINTING", "PAUSED", "ERROR"}:
-        return True
     raw_status = str(status.get("raw_status", "")).strip().upper()
-    if raw_status not in {"FINISH", "FINISHED", "COMPLETE", "COMPLETED"}:
+    if raw_status in BAMBU_ACTIVE_STATES or raw_status in BAMBU_ERROR_STATES:
+        return True
+    if raw_status not in BAMBU_COMPLETED_STATES:
         return False
     epoch_now = time.time() if now is None else now
     changed_at = _number(status.get("status_changed_at"))
@@ -1791,6 +1809,7 @@ def render(
     tun_ip: str = "--",
     tun_enabled: bool = False,
     tun_online: bool = False,
+    tun_checked: bool = False,
 ) -> Image.Image:
     image = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     draw = SmoothDraw(image)
@@ -1817,7 +1836,12 @@ def render(
     draw.text((updated_x - 10, 30), "|", font=F_META, fill=(74, 104, 139))
     draw.text((updated_x, 30), updated, font=F_META, fill=meta_text_colour)
 
-    tun_accent = (174, 112, 255) if tun_online else (255, 69, 58)
+    tun_label = tun_status_label(tun_enabled, tun_online, tun_checked)
+    tun_accent = (
+        (174, 112, 255) if tun_label == "ON"
+        else (142, 142, 147) if tun_label == "--"
+        else (255, 69, 58)
+    )
     draw_status_dot(image, (10, 46, 18, 54), tun_accent)
     draw.text(
         (23, 44),
@@ -1825,7 +1849,7 @@ def render(
         font=F_META,
         fill=meta_text_colour,
     )
-    tun_status = "TUN: " + ("ON" if tun_enabled else "OFF")
+    tun_status = "TUN: " + tun_label
     tun_box = draw.textbbox((0, 0), tun_status, font=F_META)
     tun_x = 231 - (tun_box[2] - tun_box[0])
     draw.text((tun_x - 10, 44), "|", font=F_META, fill=(74, 104, 139))
@@ -1865,6 +1889,15 @@ def render(
     # The HAT is mounted upside down; rotate the complete UI by the opposite
     # landscape orientation so it remains readable.
     return image.rotate(90)
+
+
+def tun_status_label(enabled: bool, online: bool, checked: bool) -> str:
+    """Report verified TUN state without claiming ON during startup."""
+    if not enabled:
+        return "OFF"
+    if not checked:
+        return "--"
+    return "ON" if online else "ERR"
 
 
 def _fit_lcd_text(
@@ -2331,6 +2364,7 @@ def run(
         "ip": "--",
         "checking": False,
         "online": False,
+        "network_checked": not initial_tun_enabled,
         "network_checking": False,
     }
     tun_results: queue.SimpleQueue[tuple[bool, str]] = queue.SimpleQueue()
@@ -2556,6 +2590,7 @@ def run(
                     tun_state["enabled"] = current_tun_enabled
                     tun_state["ip"] = "--"
                     tun_state["online"] = False
+                    tun_state["network_checked"] = not current_tun_enabled
                     next_tun_ip_check = 0.0
                     next_tun_network_check = 0.0
                     dirty = True
@@ -2579,7 +2614,9 @@ def run(
                     result_enabled, result_online = tun_network_results.get_nowait()
                     tun_state["network_checking"] = False
                     if result_enabled == tun_state["enabled"]:
-                        if tun_state["online"] != result_online:
+                        first_result = not tun_state["network_checked"]
+                        tun_state["network_checked"] = True
+                        if first_result or tun_state["online"] != result_online:
                             became_online = result_online and not tun_state["online"]
                             tun_state["online"] = result_online
                             if became_online:
@@ -3008,7 +3045,10 @@ def run(
                         tun_enabled = toggle_clash_verge_tun()
                         tun_state["enabled"] = tun_enabled
                         tun_state["ip"] = "--"
+                        tun_state["online"] = False
+                        tun_state["network_checked"] = not tun_enabled
                         next_tun_ip_check = 0.0
+                        next_tun_network_check = 0.0
                         overlay = render_action(
                             "Clash Verge",
                             "TUN ON" if tun_enabled else "TUN OFF",
@@ -3178,6 +3218,7 @@ def run(
                         tun_ip=str(tun_state["ip"]),
                         tun_enabled=bool(tun_state["enabled"]),
                         tun_online=bool(tun_state["online"]),
+                        tun_checked=bool(tun_state["network_checked"]),
                     )
                 )
                 display.show(
@@ -3203,6 +3244,7 @@ def run(
                         tun_ip=str(tun_state["ip"]),
                         tun_enabled=bool(tun_state["enabled"]),
                         tun_online=bool(tun_state["online"]),
+                        tun_checked=bool(tun_state["network_checked"]),
                     )
                 )
                 display.show(
@@ -3225,6 +3267,7 @@ def run(
                 runtime_status["quota_ok"] = bool(data.get("ok"))
                 runtime_status["quota_stale"] = quota_is_stale(data)
                 runtime_status["tun_online"] = bool(tun_state["online"])
+                runtime_status["tun_checked"] = bool(tun_state["network_checked"])
                 runtime_status["bambu_status"] = (
                     str(bambu_status.get("status", "")) if bambu_status else ""
                 )
@@ -3304,6 +3347,7 @@ def main() -> None:
             tun_ip=tun_ip,
             tun_enabled=tun_enabled,
             tun_online=tun_online,
+            tun_checked=True,
         ).save(args.preview)
         return
     run(

@@ -11,6 +11,7 @@ TARGET_DIR=${PI500_INSTALL_DIR:-"$HOME/.local/share/pi500-keyboard-control-cente
 USER_SERVICE_DIR="$HOME/.config/systemd/user"
 APPLICATION_DIR="$HOME/.local/share/applications"
 AUTOSTART_FILE="$HOME/.config/autostart/codex-rgb-keyboard.desktop"
+TOOLS_DESKTOP_FILE="$HOME/Desktop/常用工具/Pi 500+ 键盘控制中心.desktop"
 STATE_DIR="$HOME/.local/state/pi500-keyboard-control-center"
 STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$STATE_DIR/backups/$STAMP"
@@ -108,6 +109,9 @@ fi
 if [ -n "$desktop_dir" ] && [ -d "$desktop_dir" ]; then
     install -m 0755 "$generated_desktop" \
         "$desktop_dir/Pi 500+ 键盘控制中心.desktop"
+fi
+if [ -d "$(dirname "$TOOLS_DESKTOP_FILE")" ]; then
+    install -m 0755 "$generated_desktop" "$TOOLS_DESKTOP_FILE"
 fi
 if [ -f "$AUTOSTART_FILE" ]; then
     install -m 0755 "$generated_desktop" "$AUTOSTART_FILE"

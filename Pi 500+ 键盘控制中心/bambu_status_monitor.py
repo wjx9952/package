@@ -36,6 +36,7 @@ CAMERA_FRAME_FILE = Path(
 CAMERA_REFRESH_SECONDS = 15.0
 CAMERA_RETRY_SECONDS = 5.0
 CAMERA_ACTIVE_STATES = {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "PAUSE", "PAUSED"}
+STATUS_TRACKING_VERSION = 2
 
 
 def deep_merge(old: dict, new: dict) -> dict:
@@ -45,6 +46,32 @@ def deep_merge(old: dict, new: dict) -> dict:
         else:
             old[key] = value
     return old
+
+
+def load_previous_state(path: Path, *, now: float | None = None) -> tuple[dict, str, float]:
+    """Restore the last printer state so completion time survives restarts."""
+    epoch_now = time.time() if now is None else now
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}, "", epoch_now
+    print_data = payload.get("print") if isinstance(payload, dict) else None
+    if not isinstance(print_data, dict):
+        return {}, "", epoch_now
+    gcode_state = str(print_data.get("gcode_state", "")).strip()
+    try:
+        tracking_version = int(payload.get("status_tracking_version", 0))
+    except (TypeError, ValueError):
+        tracking_version = 0
+    try:
+        changed_at = float(payload.get("status_changed_at", 0))
+    except (TypeError, ValueError):
+        changed_at = 0
+    # Older snapshots reset this timestamp whenever the monitor restarted.
+    # Treat them as unknown instead of presenting a fabricated completion time.
+    if tracking_version < STATUS_TRACKING_VERSION or changed_at <= 0:
+        changed_at = 0
+    return {"print": print_data}, gcode_state, changed_at
 
 
 def load_config(path: Path = CONFIG_FILE) -> dict:
@@ -70,10 +97,13 @@ class BambuMonitor:
         self.report_topic = f"device/{self.serial}/report"
         self.request_topic = f"device/{self.serial}/request"
         self.state_file = state_file
-        self.raw_state: dict = {}
+        previous_state, previous_gcode_state, previous_changed_at = load_previous_state(
+            state_file
+        )
+        self.raw_state: dict = previous_state
         self.connected = False
-        self.status_changed_at = time.time()
-        self.last_gcode_state = ""
+        self.status_changed_at = previous_changed_at
+        self.last_gcode_state = previous_gcode_state
         self.camera_frame_file = CAMERA_FRAME_FILE
 
         self.client = mqtt.Client(
@@ -94,6 +124,7 @@ class BambuMonitor:
     def write_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "status_tracking_version": STATUS_TRACKING_VERSION,
             "connected": self.connected,
             "printer_ip": self.host,
             "updated_at": time.time(),
